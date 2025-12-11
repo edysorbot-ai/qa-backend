@@ -209,40 +209,21 @@ const options: swaggerJsdoc.Options = {
         },
 
         // Test Case schemas
-        TestCaseVariation: {
-          type: 'object',
-          properties: {
-            input: { type: 'string', example: 'I wanna book an appointment' },
-            type: { 
-              type: 'string', 
-              enum: ['paraphrase', 'accent', 'noise', 'interruption', 'edge_case']
-            },
-          },
-        },
         TestCase: {
           type: 'object',
           properties: {
             id: { type: 'string', format: 'uuid' },
             agent_id: { type: 'string', format: 'uuid' },
             user_id: { type: 'string', format: 'uuid' },
-            name: { type: 'string', example: 'Booking Intent Test' },
-            description: { type: 'string', example: 'Test if agent correctly handles booking requests' },
-            user_input: { type: 'string', example: 'I would like to book an appointment for tomorrow' },
-            expected_intent: { type: 'string', example: 'booking' },
-            expected_output: { type: 'string', example: 'Sure, I can help you book an appointment' },
-            variations: { 
-              type: 'array', 
-              items: { $ref: '#/components/schemas/TestCaseVariation' }
-            },
-            config_overrides: { type: 'object' },
-            is_auto_generated: { type: 'boolean', default: false },
+            name: { type: 'string', example: 'Booking Flow Test' },
+            scenario: { type: 'string', example: 'User wants to book an appointment for tomorrow at 2pm' },
             created_at: { type: 'string', format: 'date-time' },
             updated_at: { type: 'string', format: 'date-time' },
           },
         },
         CreateTestCaseRequest: {
           type: 'object',
-          required: ['agent_id', 'name', 'user_input'],
+          required: ['agent_id', 'name', 'scenario'],
           properties: {
             agent_id: { 
               type: 'string', 
@@ -252,28 +233,20 @@ const options: swaggerJsdoc.Options = {
             name: { 
               type: 'string',
               description: 'Test case name',
-              example: 'Greeting Test'
+              example: 'Booking Flow Test'
             },
-            description: { type: 'string' },
-            user_input: { 
+            scenario: { 
               type: 'string',
-              description: 'The user input/utterance to test',
-              example: 'Hello, I need help'
+              description: 'The scenario/situation to test',
+              example: 'User wants to book an appointment for tomorrow at 2pm'
             },
-            expected_intent: { 
-              type: 'string',
-              description: 'Expected intent to be detected',
-              example: 'greeting'
-            },
-            expected_output: { 
-              type: 'string',
-              description: 'Expected agent response (for matching)'
-            },
-            variations: { 
-              type: 'array', 
-              items: { $ref: '#/components/schemas/TestCaseVariation' }
-            },
-            config_overrides: { type: 'object' },
+          },
+        },
+        UpdateTestCaseRequest: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            scenario: { type: 'string' },
           },
         },
         BulkCreateTestCasesRequest: {

@@ -28,20 +28,14 @@ export class TestCaseService {
 
   async create(data: CreateTestCaseDTO): Promise<TestCase> {
     const result = await query(
-      `INSERT INTO test_cases (agent_id, user_id, name, description, user_input, expected_intent, expected_output, variations, config_overrides, is_auto_generated)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO test_cases (agent_id, user_id, name, scenario)
+       VALUES ($1, $2, $3, $4)
        RETURNING *`,
       [
         data.agent_id,
         data.user_id,
         data.name,
-        data.description,
-        data.user_input,
-        data.expected_intent,
-        data.expected_output,
-        JSON.stringify(data.variations || []),
-        JSON.stringify(data.config_overrides || {}),
-        data.is_auto_generated || false,
+        data.scenario,
       ]
     );
     return result.rows[0];
@@ -65,29 +59,9 @@ export class TestCaseService {
       fields.push(`name = $${paramCount++}`);
       values.push(data.name);
     }
-    if (data.description !== undefined) {
-      fields.push(`description = $${paramCount++}`);
-      values.push(data.description);
-    }
-    if (data.user_input !== undefined) {
-      fields.push(`user_input = $${paramCount++}`);
-      values.push(data.user_input);
-    }
-    if (data.expected_intent !== undefined) {
-      fields.push(`expected_intent = $${paramCount++}`);
-      values.push(data.expected_intent);
-    }
-    if (data.expected_output !== undefined) {
-      fields.push(`expected_output = $${paramCount++}`);
-      values.push(data.expected_output);
-    }
-    if (data.variations !== undefined) {
-      fields.push(`variations = $${paramCount++}`);
-      values.push(JSON.stringify(data.variations));
-    }
-    if (data.config_overrides !== undefined) {
-      fields.push(`config_overrides = $${paramCount++}`);
-      values.push(JSON.stringify(data.config_overrides));
+    if (data.scenario !== undefined) {
+      fields.push(`scenario = $${paramCount++}`);
+      values.push(data.scenario);
     }
 
     if (fields.length === 0) return this.findById(id);

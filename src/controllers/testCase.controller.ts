@@ -49,23 +49,17 @@ export class TestCaseController {
         return res.status(404).json({ error: 'User not found' });
       }
 
-      const { agent_id, name, description, user_input, expected_intent, expected_output, variations, config_overrides } = req.body;
+      const { agent_id, name, scenario } = req.body;
 
-      if (!agent_id || !name || !user_input) {
-        return res.status(400).json({ error: 'Agent ID, name, and user input are required' });
+      if (!agent_id || !name || !scenario) {
+        return res.status(400).json({ error: 'Agent ID, name, and scenario are required' });
       }
 
       const testCase = await testCaseService.create({
         agent_id,
         user_id: user.id,
         name,
-        description,
-        user_input,
-        expected_intent,
-        expected_output,
-        variations,
-        config_overrides,
-        is_auto_generated: false,
+        scenario,
       });
 
       res.status(201).json({ testCase });
@@ -103,16 +97,11 @@ export class TestCaseController {
   async update(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const { name, description, user_input, expected_intent, expected_output, variations, config_overrides } = req.body;
+      const { name, scenario } = req.body;
 
       const testCase = await testCaseService.update(id, {
         name,
-        description,
-        user_input,
-        expected_intent,
-        expected_output,
-        variations,
-        config_overrides,
+        scenario,
       });
       
       if (!testCase) {
