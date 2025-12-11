@@ -197,6 +197,158 @@
 
 /**
  * @swagger
+ * /api/integrations/validate:
+ *   post:
+ *     summary: Validate API key without saving
+ *     description: Test if an API key is valid for a provider before creating an integration
+ *     tags: [Integrations]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - provider
+ *               - api_key
+ *             properties:
+ *               provider:
+ *                 type: string
+ *                 enum: [elevenlabs, retell, vapi, openai_realtime]
+ *                 example: elevenlabs
+ *               api_key:
+ *                 type: string
+ *                 example: sk-xxxxxxxxxxxxxxxxxxxxx
+ *     responses:
+ *       200:
+ *         description: Validation result
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ValidationResult'
+ *       400:
+ *         description: Missing provider or api_key
+ *       401:
+ *         description: Unauthorized
+ */
+
+/**
+ * @swagger
+ * /api/integrations/{id}/test:
+ *   post:
+ *     summary: Test connection to provider
+ *     description: Re-validate the stored API key for an existing integration
+ *     tags: [Integrations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Integration ID
+ *     responses:
+ *       200:
+ *         description: Connection test result
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 connected:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: ElevenLabs API key is valid
+ *                 details:
+ *                   $ref: '#/components/schemas/ProviderAccountDetails'
+ *       404:
+ *         description: Integration not found
+ *       401:
+ *         description: Unauthorized
+ */
+
+/**
+ * @swagger
+ * /api/integrations/{id}/agents:
+ *   get:
+ *     summary: List agents from provider
+ *     description: Fetch all agents/assistants directly from the voice provider using stored API key
+ *     tags: [Integrations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Integration ID
+ *     responses:
+ *       200:
+ *         description: List of agents from provider
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 agents:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/ProviderAgent'
+ *       404:
+ *         description: Integration not found
+ *       401:
+ *         description: Unauthorized
+ */
+
+/**
+ * @swagger
+ * /api/integrations/{id}/agents/{agentId}:
+ *   get:
+ *     summary: Get specific agent from provider
+ *     description: Fetch detailed information about a specific agent from the voice provider
+ *     tags: [Integrations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Integration ID
+ *       - in: path
+ *         name: agentId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Provider's agent ID
+ *     responses:
+ *       200:
+ *         description: Agent details from provider
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 agent:
+ *                   $ref: '#/components/schemas/ProviderAgent'
+ *       404:
+ *         description: Integration or agent not found
+ *       401:
+ *         description: Unauthorized
+ */
+
+/**
+ * @swagger
  * /api/agents:
  *   get:
  *     summary: Get all agents for current user

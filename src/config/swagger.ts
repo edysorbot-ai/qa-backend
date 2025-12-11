@@ -92,6 +92,48 @@ const options: swaggerJsdoc.Options = {
             is_active: { type: 'boolean' },
           },
         },
+        ValidationResult: {
+          type: 'object',
+          properties: {
+            valid: { type: 'boolean', example: true },
+            message: { type: 'string', example: 'ElevenLabs API key is valid' },
+            details: { $ref: '#/components/schemas/ProviderAccountDetails' },
+          },
+        },
+        ProviderAccountDetails: {
+          type: 'object',
+          properties: {
+            accountName: { type: 'string', example: 'John Doe' },
+            accountEmail: { type: 'string', format: 'email', example: 'john@example.com' },
+            plan: { type: 'string', example: 'creator' },
+            creditsRemaining: { type: 'integer', example: 45000 },
+            agentsCount: { type: 'integer', example: 3 },
+            subscriptionStatus: { type: 'string', example: 'active' },
+            characterLimit: { type: 'integer', example: 100000 },
+            characterUsed: { type: 'integer', example: 55000 },
+            availableModels: { 
+              type: 'array', 
+              items: { type: 'string' },
+              example: ['gpt-4o-realtime-preview', 'gpt-4o']
+            },
+          },
+        },
+        ProviderAgent: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', example: 'agent_abc123' },
+            name: { type: 'string', example: 'Customer Support Agent' },
+            provider: { type: 'string', enum: ['elevenlabs', 'retell', 'vapi', 'openai_realtime'] },
+            description: { type: 'string', example: 'A helpful customer support assistant' },
+            voice: { type: 'string', example: 'rachel' },
+            language: { type: 'string', example: 'en' },
+            metadata: { 
+              type: 'object',
+              additionalProperties: true,
+              example: { firstMessage: 'Hello! How can I help you today?' }
+            },
+          },
+        },
 
         // Agent schemas
         Agent: {
