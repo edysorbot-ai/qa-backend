@@ -3,6 +3,9 @@ import { integrationController } from '../controllers/integration.controller';
 
 const router = Router();
 
+// POST /api/integrations/validate - Validate API key without saving
+router.post('/validate', integrationController.validateKey.bind(integrationController));
+
 // GET /api/integrations - Get all integrations for user
 router.get('/', integrationController.getAll.bind(integrationController));
 
@@ -17,5 +20,14 @@ router.put('/:id', integrationController.update.bind(integrationController));
 
 // DELETE /api/integrations/:id - Delete integration
 router.delete('/:id', integrationController.delete.bind(integrationController));
+
+// POST /api/integrations/:id/test - Test connection to provider
+router.post('/:id/test', integrationController.testConnection.bind(integrationController));
+
+// GET /api/integrations/:id/agents - List agents from provider
+router.get('/:id/agents', integrationController.listAgents.bind(integrationController));
+
+// GET /api/integrations/:id/agents/:agentId - Get specific agent from provider
+router.get('/:id/agents/:agentId', integrationController.getAgent.bind(integrationController));
 
 export default router;

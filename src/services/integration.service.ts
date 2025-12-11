@@ -1,5 +1,7 @@
 import { query } from '../db';
 import { Integration, CreateIntegrationDTO, UpdateIntegrationDTO, Provider } from '../models/integration.model';
+import { getProviderClient } from '../providers/provider.factory';
+import { ProviderValidationResult, VoiceAgent } from '../providers/provider.interface';
 
 export class IntegrationService {
   async findById(id: string): Promise<Integration | null> {
@@ -72,25 +74,123 @@ export class IntegrationService {
     return (result.rowCount ?? 0) > 0;
   }
 
-  // Validate API key with provider (to be implemented per provider)
-  async validateApiKey(provider: Provider, apiKey: string): Promise<boolean> {
-    // TODO: Implement validation for each provider
-    switch (provider) {
-      case 'elevenlabs':
-        // Validate with ElevenLabs API
-        return true;
-      case 'retell':
-        // Validate with Retell API
-        return true;
-      case 'vapi':
-        // Validate with VAPI API
-        return true;
-      case 'openai_realtime':
-        // Validate with OpenAI API
-        return true;
-      default:
-        return false;
+  /**
+   * Validate API key with the actual provider API
+   * Returns detailed validation result including account info
+   */
+  async validateApiKey(provider: Provider, apiKey: string): Promise<ProviderValidationResult> {
+    try {
+      const client = getProviderClient(provider);
+      return await client.validateApiKey(apiKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        valid: false,
+        message: `Failed to validate ${provider} API key: ${message}`,
+      };
     }
+  }
+
+  /**
+   * Create integration with API key validation
+   * Validates the key before saving to database
+   */
+  async createWithValidation(data: CreateIntegrationDTO): Promise<{
+    integration: Integration | null;
+    validation: ProviderValidationResult;
+  }> {
+    // First validate the API key
+    const validation = await this.validateApiKey(data.provider, data.api_key);
+
+    if (!validation.valid) {
+      return { integration: null, validation };
+    }
+
+    // If valid, save to database
+    const integration = await this.create(data);
+    return { integration, validation };
+  }
+
+  /**
+   * Update integration with API key validation (if API key is being changed)
+   */
+  async updateWithValidation(
+    id: string,
+    data: UpdateIntegrationDTO
+  ): Promise<{
+    integration: Integration | null;
+    validation: ProviderValidationResult | null;
+  }> {
+    // If API key is being updated, validate it first
+    if (data.api_key) {
+      const existing = await this.findById(id);
+      if (!existing) {
+        return {
+          integration: null,
+          validation: { valid: false, message: 'Integration not found' },
+        };
+      }
+
+      const validation = await this.validateApiKey(existing.provider, data.api_key);
+      if (!validation.valid) {
+        return { integration: null, validation };
+      }
+
+      const integration = await this.update(id, data);
+      return { integration, validation };
+    }
+
+    // No API key change, just update other fields
+    const integration = await this.update(id, data);
+    return { integration, validation: null };
+  }
+
+  /**
+   * List agents from the provider using the stored API key
+   */
+  async listProviderAgents(integrationId: string): Promise<VoiceAgent[]> {
+    const integration = await this.findById(integrationId);
+    if (!integration || !integration.is_active) {
+      return [];
+    }
+
+    try {
+      const client = getProviderClient(integration.provider);
+      return await client.listAgents(integration.api_key);
+    } catch (error) {
+      console.error(`Error listing agents for ${integration.provider}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Get a specific agent from the provider
+   */
+  async getProviderAgent(integrationId: string, agentId: string): Promise<VoiceAgent | null> {
+    const integration = await this.findById(integrationId);
+    if (!integration || !integration.is_active) {
+      return null;
+    }
+
+    try {
+      const client = getProviderClient(integration.provider);
+      return await client.getAgent(integration.api_key, agentId);
+    } catch (error) {
+      console.error(`Error getting agent ${agentId} from ${integration.provider}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Test connection to provider (re-validate stored key)
+   */
+  async testConnection(integrationId: string): Promise<ProviderValidationResult> {
+    const integration = await this.findById(integrationId);
+    if (!integration) {
+      return { valid: false, message: 'Integration not found' };
+    }
+
+    return this.validateApiKey(integration.provider, integration.api_key);
   }
 }
 
