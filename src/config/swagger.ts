@@ -13,6 +13,10 @@ const options: swaggerJsdoc.Options = {
     },
     servers: [
       {
+        url: 'https://qa-backend-production-cf3a.up.railway.app',
+        description: 'Production server',
+      },
+      {
         url: 'http://localhost:5000',
         description: 'Development server',
       },
