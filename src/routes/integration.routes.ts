@@ -30,4 +30,7 @@ router.get('/:id/agents', integrationController.listAgents.bind(integrationContr
 // GET /api/integrations/:id/agents/:agentId - Get specific agent from provider
 router.get('/:id/agents/:agentId', integrationController.getAgent.bind(integrationController));
 
+// POST /api/integrations/:id/agents/:agentId/analyze - Analyze agent and generate test cases
+router.post('/:id/agents/:agentId/analyze', integrationController.analyzeAgent.bind(integrationController));
+
 export default router;

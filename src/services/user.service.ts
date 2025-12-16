@@ -91,6 +91,24 @@ export class UserService {
     });
   }
 
+  // Find user by clerk ID or create a minimal user record
+  async findOrCreateByClerkId(clerkId: string): Promise<User> {
+    const existing = await this.findByClerkId(clerkId);
+    
+    if (existing) {
+      return existing;
+    }
+
+    // Create a minimal user record - can be enriched later via webhook
+    return this.create({
+      clerk_id: clerkId,
+      email: `${clerkId}@placeholder.com`, // Will be updated via webhook or sync
+      first_name: undefined,
+      last_name: undefined,
+      image_url: undefined,
+    });
+  }
+
   async delete(id: string): Promise<boolean> {
     const result = await query(
       'DELETE FROM users WHERE id = $1',

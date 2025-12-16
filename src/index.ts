@@ -1,16 +1,22 @@
 import app from './app';
 import { config } from './config';
-import { pool } from './db';
+import { pool, connectWithRetry } from './db';
 import { initializeDatabase } from './db/migrations/init';
+import { addTestCaseColumns } from './db/migrations/003_add_test_case_columns';
 
 const startServer = async () => {
   try {
-    // Test database connection
-    await pool.query('SELECT NOW()');
-    console.log('✅ Database connection successful');
+    // Test database connection with retries (for Neon cold starts)
+    const connected = await connectWithRetry(3, 5000);
+    if (!connected) {
+      throw new Error('Failed to connect to database after multiple retries');
+    }
 
     // Initialize database tables
     await initializeDatabase();
+    
+    // Run additional migrations
+    await addTestCaseColumns();
 
     // Start server
     app.listen(config.port, () => {

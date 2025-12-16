@@ -8,10 +8,7 @@ export class TestRunController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
-      const user = await userService.findByClerkId(clerkUser.userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
 
       const { agent_id, limit } = req.query;
 
@@ -46,10 +43,7 @@ export class TestRunController {
   async create(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
-      const user = await userService.findByClerkId(clerkUser.userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
 
       const { agent_id, name, config, test_case_ids } = req.body;
 
@@ -145,10 +139,7 @@ export class TestRunController {
   async getStats(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
-      const user = await userService.findByClerkId(clerkUser.userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
 
       const stats = await testRunService.getStats(user.id);
       res.json({ stats });

@@ -8,7 +8,7 @@ export const pool = new Pool({
   },
   max: 10,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  connectionTimeoutMillis: 30000, // Increased timeout for Neon cold starts
 });
 
 pool.on('connect', () => {
@@ -17,8 +17,27 @@ pool.on('connect', () => {
 
 pool.on('error', (err) => {
   console.error('❌ Unexpected error on idle client', err);
-  process.exit(-1);
+  // Don't exit on error - try to reconnect
 });
+
+// Retry connection helper for Neon cold starts
+export const connectWithRetry = async (maxRetries = 3, delayMs = 5000): Promise<boolean> => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`🔄 Database connection attempt ${attempt}/${maxRetries}...`);
+      const client = await pool.connect();
+      client.release();
+      console.log('✅ Database connection successful');
+      return true;
+    } catch (error) {
+      console.log(`⏳ Attempt ${attempt} failed. ${attempt < maxRetries ? `Retrying in ${delayMs/1000}s...` : 'No more retries.'}`);
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  return false;
+};
 
 export const query = async (text: string, params?: any[]) => {
   const start = Date.now();

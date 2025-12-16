@@ -40,12 +40,31 @@ interface ElevenLabsAgent {
     agent?: {
       prompt?: {
         prompt: string;
+        llm?: string;
+        temperature?: number;
+        max_tokens?: number;
       };
       first_message?: string;
       language?: string;
     };
     tts?: {
       voice_id?: string;
+      model_id?: string;
+      stability?: number;
+      similarity_boost?: number;
+      style?: number;
+      speed?: number;
+      optimize_streaming_latency?: number;
+    };
+    stt?: {
+      provider?: string;
+      model?: string;
+      language?: string;
+    };
+    turn?: {
+      turn_timeout?: number;
+      silence_timeout_ms?: number;
+      max_duration_ms?: number;
     };
   };
   metadata?: Record<string, any>;
@@ -76,8 +95,10 @@ export class ElevenLabsProvider implements VoiceProviderClient {
 
   async validateApiKey(apiKey: string): Promise<ProviderValidationResult> {
     try {
+      console.log('Validating ElevenLabs API key...');
       // Get user info to validate the key
       const user = await this.request<ElevenLabsUser>(apiKey, '/user');
+      console.log('ElevenLabs validation success:', user.first_name);
 
       return {
         valid: true,
@@ -93,6 +114,7 @@ export class ElevenLabsProvider implements VoiceProviderClient {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error('ElevenLabs validation error:', message);
       return {
         valid: false,
         message: `Invalid ElevenLabs API key: ${message}`,
@@ -132,16 +154,46 @@ export class ElevenLabsProvider implements VoiceProviderClient {
         `/convai/agents/${agentId}`
       );
 
+      const config = agent.conversation_config;
+      const promptConfig = config?.agent?.prompt;
+      const ttsConfig = config?.tts;
+      const sttConfig = config?.stt;
+      const turnConfig = config?.turn;
+
       return {
         id: agent.agent_id,
         name: agent.name,
         provider: 'elevenlabs',
-        description: agent.conversation_config?.agent?.prompt?.prompt,
-        voice: agent.conversation_config?.tts?.voice_id,
-        language: agent.conversation_config?.agent?.language,
+        description: promptConfig?.prompt,
+        voice: ttsConfig?.voice_id,
+        language: config?.agent?.language,
         metadata: {
-          firstMessage: agent.conversation_config?.agent?.first_message,
-          fullConfig: agent.conversation_config,
+          // LLM Settings
+          llmModel: promptConfig?.llm,
+          temperature: promptConfig?.temperature,
+          maxTokens: promptConfig?.max_tokens,
+          
+          // Voice/TTS Settings
+          voiceModel: ttsConfig?.model_id,
+          voiceStability: ttsConfig?.stability,
+          voiceSimilarityBoost: ttsConfig?.similarity_boost,
+          voiceStyle: ttsConfig?.style,
+          voiceSpeed: ttsConfig?.speed,
+          optimizeLatency: ttsConfig?.optimize_streaming_latency,
+          
+          // STT Settings
+          transcriberProvider: sttConfig?.provider,
+          transcriberModel: sttConfig?.model,
+          transcriberLanguage: sttConfig?.language,
+          
+          // Turn Settings
+          turnTimeout: turnConfig?.turn_timeout,
+          silenceTimeout: turnConfig?.silence_timeout_ms,
+          maxDuration: turnConfig?.max_duration_ms,
+          
+          // Other
+          firstMessage: config?.agent?.first_message,
+          fullConfig: config,
         },
       };
     } catch (error) {

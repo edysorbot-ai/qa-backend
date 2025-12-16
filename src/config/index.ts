@@ -18,4 +18,9 @@ export const config = {
   cors: {
     frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
   },
+
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY || '',
+    orgId: process.env.OPENAI_ORG_ID || '',
+  },
 };

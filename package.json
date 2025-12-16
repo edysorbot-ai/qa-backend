@@ -21,15 +21,23 @@
   "dependencies": {
     "@clerk/backend": "^2.27.0",
     "@clerk/express": "^1.7.57",
+    "@deepgram/sdk": "^4.11.2",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
+    "bullmq": "^5.65.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
+    "ioredis": "^5.8.2",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
+    "openai": "^6.10.0",
     "pg": "^8.16.3",
     "swagger-jsdoc": "^6.2.8",
-    "swagger-ui-express": "^5.0.1"
+    "swagger-ui-express": "^5.0.1",
+    "uuid": "^13.0.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

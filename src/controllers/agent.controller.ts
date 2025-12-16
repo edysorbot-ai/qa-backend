@@ -6,10 +6,7 @@ export class AgentController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
-      const user = await userService.findByClerkId(clerkUser.userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
 
       const agents = await agentService.findByUserId(user.id);
       res.json({ agents });
@@ -36,10 +33,7 @@ export class AgentController {
   async create(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
-      const user = await userService.findByClerkId(clerkUser.userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
 
       const { integration_id, external_agent_id, name, provider, prompt, intents, config } = req.body;
 

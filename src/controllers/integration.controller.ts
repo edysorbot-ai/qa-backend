@@ -6,10 +6,7 @@ export class IntegrationController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
-      const user = await userService.findByClerkId(clerkUser.userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
 
       const integrations = await integrationService.findByUserId(user.id);
       
@@ -49,40 +46,53 @@ export class IntegrationController {
   async create(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
-      const user = await userService.findByClerkId(clerkUser.userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
 
-      const { provider, api_key } = req.body;
+      const { provider, api_key, validate = false } = req.body;
 
       if (!provider || !api_key) {
         return res.status(400).json({ error: 'Provider and API key are required' });
       }
 
-      // Validate API key with provider and create if valid
-      const { integration, validation } = await integrationService.createWithValidation({
+      // If validate flag is true, validate before saving
+      if (validate) {
+        const { integration, validation } = await integrationService.createWithValidation({
+          user_id: user.id,
+          provider,
+          api_key,
+        });
+
+        if (!validation.valid || !integration) {
+          return res.status(400).json({
+            error: 'Invalid API key',
+            message: validation.message,
+          });
+        }
+
+        return res.status(201).json({
+          integration: {
+            ...integration,
+            api_key: `****${integration.api_key.slice(-4)}`,
+          },
+          validation: {
+            valid: validation.valid,
+            message: validation.message,
+            details: validation.details,
+          },
+        });
+      }
+
+      // Save without validation (default)
+      const integration = await integrationService.create({
         user_id: user.id,
         provider,
         api_key,
       });
 
-      if (!validation.valid || !integration) {
-        return res.status(400).json({
-          error: 'Invalid API key',
-          message: validation.message,
-        });
-      }
-
       res.status(201).json({
         integration: {
           ...integration,
           api_key: `****${integration.api_key.slice(-4)}`,
-        },
-        validation: {
-          valid: validation.valid,
-          message: validation.message,
-          details: validation.details,
         },
       });
     } catch (error) {
@@ -213,6 +223,26 @@ export class IntegrationController {
         message: validation.message,
         details: validation.details,
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Analyze agent and generate test cases
+   */
+  async analyzeAgent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id, agentId } = req.params;
+      const { maxTestCases = 20 } = req.body;
+
+      const result = await integrationService.analyzeAgentAndGenerateTestCases(
+        id,
+        agentId,
+        maxTestCases
+      );
+
+      res.json(result);
     } catch (error) {
       next(error);
     }

@@ -28,14 +28,22 @@ export class TestCaseService {
 
   async create(data: CreateTestCaseDTO): Promise<TestCase> {
     const result = await query(
-      `INSERT INTO test_cases (agent_id, user_id, name, scenario)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO test_cases (
+        agent_id, user_id, name, description, scenario, 
+        expected_behavior, key_topic, test_type, batch_compatible
+      )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         data.agent_id,
         data.user_id,
         data.name,
+        data.description || null,
         data.scenario,
+        data.expected_behavior || null,
+        data.key_topic || null,
+        data.test_type || null,
+        data.batch_compatible ?? true,
       ]
     );
     return result.rows[0];
@@ -59,9 +67,29 @@ export class TestCaseService {
       fields.push(`name = $${paramCount++}`);
       values.push(data.name);
     }
+    if (data.description !== undefined) {
+      fields.push(`description = $${paramCount++}`);
+      values.push(data.description);
+    }
     if (data.scenario !== undefined) {
       fields.push(`scenario = $${paramCount++}`);
       values.push(data.scenario);
+    }
+    if (data.expected_behavior !== undefined) {
+      fields.push(`expected_behavior = $${paramCount++}`);
+      values.push(data.expected_behavior);
+    }
+    if (data.key_topic !== undefined) {
+      fields.push(`key_topic = $${paramCount++}`);
+      values.push(data.key_topic);
+    }
+    if (data.test_type !== undefined) {
+      fields.push(`test_type = $${paramCount++}`);
+      values.push(data.test_type);
+    }
+    if (data.batch_compatible !== undefined) {
+      fields.push(`batch_compatible = $${paramCount++}`);
+      values.push(data.batch_compatible);
     }
 
     if (fields.length === 0) return this.findById(id);

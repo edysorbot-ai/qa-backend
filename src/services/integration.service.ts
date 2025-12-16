@@ -192,6 +192,76 @@ export class IntegrationService {
 
     return this.validateApiKey(integration.provider, integration.api_key);
   }
+
+  /**
+   * Analyze agent and generate test cases using OpenAI
+   * Uses SmartTestCaseGeneratorService for topic-based test case generation
+   */
+  async analyzeAgentAndGenerateTestCases(
+    integrationId: string,
+    agentId: string,
+    maxTestCases: number = 20
+  ): Promise<{
+    agent: VoiceAgent | null;
+    agentAnalysis: any;
+    testCases: any[];
+    keyTopics?: any[];
+    testPlan?: any;
+  }> {
+    // Import the SMART test case generator service (with topic-based categorization)
+    const { smartTestCaseGeneratorService } = await import('./smart-testcase-generator.service');
+
+    // Get the full agent details
+    const agent = await this.getProviderAgent(integrationId, agentId);
+    if (!agent) {
+      throw new Error('Agent not found');
+    }
+
+    // Extract prompt and config from agent metadata
+    const agentPrompt = agent.description || 
+      agent.metadata?.fullPrompt || 
+      agent.metadata?.fullConfig?.agent?.prompt?.prompt ||
+      '';
+    
+    const agentConfig = {
+      ...agent.metadata,
+      voice: agent.voice,
+      language: agent.language,
+    };
+
+    // Generate test cases using SmartTestCaseGeneratorService
+    // This generates test cases grouped by KEY TOPICS (e.g., Budget, Eligibility, Off-Topic)
+    const result = await smartTestCaseGeneratorService.generateSmartTestCases(
+      agent.name,
+      agentPrompt,
+      agentConfig,
+      maxTestCases
+    );
+
+    // Transform smart test cases to the expected format
+    // Category is set to keyTopicName (e.g., "Budget", "Eligibility")
+    const testCases = result.testCases.map(tc => ({
+      id: tc.id,
+      name: tc.name,
+      scenario: tc.scenario,
+      category: tc.keyTopicName, // Use key topic as category for batch grouping
+      expectedOutcome: tc.expectedOutcome,
+      priority: tc.priority,
+      keyTopic: tc.keyTopicName,
+      keyTopicId: tc.keyTopicId,
+      testType: tc.testType,
+      canBatchWith: tc.canBatchWith,
+      estimatedTurns: tc.estimatedTurns,
+    }));
+
+    return {
+      agent,
+      agentAnalysis: result.agentAnalysis,
+      testCases,
+      keyTopics: result.agentAnalysis.keyTopics,
+      testPlan: result.testPlan,
+    };
+  }
 }
 
 export const integrationService = new IntegrationService();
