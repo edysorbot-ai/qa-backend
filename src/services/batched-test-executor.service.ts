@@ -117,7 +117,8 @@ export class BatchedTestExecutorService {
     batch: CallBatch,
     agentConfig: { provider: string; agentId: string; apiKey: string },
     transcript: ConversationTurn[],
-    audioChunks: Buffer[]
+    audioChunks: Buffer[],
+    userAudioChunks: Buffer[] = [] // Track user audio separately
   ): Promise<{ success: boolean; error?: string }> {
     return new Promise(async (resolve) => {
       const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
@@ -130,13 +131,18 @@ export class BatchedTestExecutorService {
       ];
       
       let turnCount = 0;
-      const maxTurns = Math.min(batch.testCases.reduce((sum, tc) => sum + tc.estimatedTurns, 0) + 5, 40);
+      // Allow more turns for natural conversation flow - at least 20 turns or 4 per test case
+      const minTurns = Math.max(20, batch.testCases.length * 4);
+      const maxTurns = Math.min(minTurns + 10, 60);
       let currentAgentResponse = '';
       let conversationComplete = false;
       let isProcessingResponse = false;
       let expectedInputFormat = 'ulaw_8000';
       let currentTestCaseIndex = 0;
       let testedCases = new Set<string>();
+      let lastActivity = Date.now();
+      
+      console.log(`[BatchedExecutor] Config: minTurns=${minTurns}, maxTurns=${maxTurns}, testCases=${batch.testCases.length}`);
       
       try {
         // Get signed URL for WebSocket
@@ -162,14 +168,29 @@ export class BatchedTestExecutorService {
 
         let silenceTimer: NodeJS.Timeout | null = null;
         let agentResponseTimer: NodeJS.Timeout | null = null;
+        
+        // Send keepalive audio every 5 seconds to prevent timeout
+        const keepaliveInterval = setInterval(() => {
+          if (!conversationComplete && ws.readyState === WebSocket.OPEN) {
+            try {
+              // Send minimal silence to keep connection alive
+              ws.send(JSON.stringify({ user_audio_chunk: Buffer.alloc(160, 0xFF).toString('base64') }));
+            } catch (e) {
+              // Ignore errors
+            }
+          }
+        }, 5000);
 
         const processAgentTurn = async () => {
-          if (isProcessingResponse || !currentAgentResponse.trim() || conversationComplete) return;
+          if (isProcessingResponse || !currentAgentResponse.trim() || conversationComplete) {
+            console.log(`[BatchedExecutor] processAgentTurn skipped: isProcessing=${isProcessingResponse}, hasResponse=${!!currentAgentResponse.trim()}, complete=${conversationComplete}`);
+            return;
+          }
           isProcessingResponse = true;
           
           turnCount++;
           const agentMessage = currentAgentResponse.trim();
-          console.log(`[BatchedExecutor] Agent (turn ${turnCount}): ${agentMessage.substring(0, 100)}...`);
+          console.log(`[BatchedExecutor] Agent (turn ${turnCount}): ${agentMessage.substring(0, 150)}...`);
           
           transcript.push({
             role: 'ai_agent',
@@ -180,8 +201,12 @@ export class BatchedTestExecutorService {
           conversationHistory.push({ role: 'user', content: agentMessage });
           
           // Check if we should end
-          if (turnCount >= maxTurns || this.shouldEndBatchConversation(agentMessage, turnCount, testedCases.size, batch.testCases.length)) {
+          const shouldEnd = this.shouldEndBatchConversation(agentMessage, turnCount, testedCases.size, batch.testCases.length);
+          console.log(`[BatchedExecutor] Should end check: turnCount=${turnCount}, maxTurns=${maxTurns}, testedCases=${testedCases.size}/${batch.testCases.length}, shouldEnd=${shouldEnd}`);
+          
+          if (turnCount >= maxTurns || shouldEnd) {
             conversationComplete = true;
+            console.log(`[BatchedExecutor] Ending conversation: turnCount=${turnCount} >= maxTurns=${maxTurns} || shouldEnd=${shouldEnd}`);
             
             // Send goodbye
             const goodbye = "Thank you so much for all this information! You've been very helpful. Goodbye!";
@@ -189,6 +214,8 @@ export class BatchedTestExecutorService {
             
             try {
               const ttsResult = await ttsService.generateSpeechUlaw({ text: goodbye });
+              // Add test caller audio to recording
+              audioChunks.push(ttsResult.audioBuffer);
               await this.sendAudioToAgent(ws, ttsResult.audioBuffer);
             } catch (e) {
               console.error('[BatchedExecutor] TTS error for goodbye:', e);
@@ -223,6 +250,8 @@ export class BatchedTestExecutorService {
             // Send audio
             try {
               const ttsResult = await ttsService.generateSpeechUlaw({ text: response.text });
+              // Add test caller audio to recording
+              audioChunks.push(ttsResult.audioBuffer);
               await this.sendAudioToAgent(ws, ttsResult.audioBuffer);
               
               // Set response timer
@@ -248,8 +277,12 @@ export class BatchedTestExecutorService {
         });
 
         ws.on('message', async (data: Buffer) => {
+          lastActivity = Date.now();
           try {
             const message = JSON.parse(data.toString());
+            
+            // Log all message types for debugging
+            console.log(`[BatchedExecutor] Received message type: ${message.type}`);
             
             switch (message.type) {
               case 'conversation_initiation_metadata':
@@ -261,6 +294,8 @@ export class BatchedTestExecutorService {
                   try {
                     const greeting = "Hello?";
                     const ttsResult = await ttsService.generateSpeechUlaw({ text: greeting });
+                    // Add test caller audio to recording
+                    audioChunks.push(ttsResult.audioBuffer);
                     await this.sendAudioToAgent(ws, ttsResult.audioBuffer);
                   } catch (e) {
                     console.error('[BatchedExecutor] Error sending greeting:', e);
@@ -280,7 +315,7 @@ export class BatchedTestExecutorService {
                     if (currentAgentResponse.trim()) {
                       processAgentTurn();
                     }
-                  }, 3000);
+                  }, 1500);
                 }
                 break;
                 
@@ -295,6 +330,27 @@ export class BatchedTestExecutorService {
                   audioChunks.push(Buffer.from(message.audio_event.audio_base_64, 'base64'));
                 }
                 break;
+              
+              case 'error':
+                console.error(`[BatchedExecutor] Received error from agent:`, message);
+                break;
+                
+              case 'interruption':
+                console.log(`[BatchedExecutor] Interruption event received`);
+                break;
+                
+              case 'conversation_ended':
+              case 'session_ended':
+              case 'connection_closed':
+                console.log(`[BatchedExecutor] Agent ended conversation: ${message.type}`);
+                conversationComplete = true;
+                break;
+                
+              default:
+                // Log unknown message types to understand what's happening
+                if (!['user_transcript', 'audio_event', 'internal_vad_score', 'internal_turn_probability', 'user_started_speaking'].includes(message.type)) {
+                  console.log(`[BatchedExecutor] Unknown message type: ${message.type}`, JSON.stringify(message).substring(0, 200));
+                }
             }
           } catch (e) {
             // Binary audio data - capture it
@@ -304,16 +360,21 @@ export class BatchedTestExecutorService {
           }
         });
 
-        ws.on('close', () => {
+        ws.on('close', (code, reason) => {
           clearTimeout(timeout);
+          clearInterval(keepaliveInterval);
           if (silenceTimer) clearTimeout(silenceTimer);
           if (agentResponseTimer) clearTimeout(agentResponseTimer);
-          console.log(`[BatchedExecutor] WebSocket closed, ${transcript.length} messages`);
+          const closeReason = reason ? reason.toString() : 'unknown';
+          console.log(`[BatchedExecutor] WebSocket closed. Code: ${code}, Reason: ${closeReason}`);
+          console.log(`[BatchedExecutor] Final stats: ${transcript.length} messages, turnCount=${turnCount}, testedCases=${testedCases.size}`);
+          console.log(`[BatchedExecutor] Was conversation marked complete? ${conversationComplete}`);
           resolve({ success: true });
         });
 
         ws.on('error', (error) => {
           console.error('[BatchedExecutor] WebSocket error:', error);
+          console.error('[BatchedExecutor] Error details:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
           resolve({ success: false, error: error.message });
         });
 
@@ -326,80 +387,221 @@ export class BatchedTestExecutorService {
 
   /**
    * Build prompt for test caller handling multiple test cases
+   * IMPORTANT: Include ALL test cases so the test caller knows what to test
    */
   private buildBatchTestCallerPrompt(testCases: SmartTestCase[]): string {
-    const testCaseDescriptions = testCases.map((tc, idx) => 
-      `${idx + 1}. ${tc.name}\n   Scenario: ${tc.scenario}\n   User Input: ${tc.userInput}\n   Expected: ${tc.expectedOutcome}`
-    ).join('\n\n');
+    // Build the list of test scenarios to cover
+    const testScenarios = testCases.map((tc, idx) => {
+      return `${idx + 1}. "${tc.name}": ${tc.scenario || tc.userInput}`;
+    }).join('\n');
 
-    return `You are a TEST CALLER conducting a QA test on a voice AI agent. You need to test MULTIPLE scenarios in this SINGLE conversation.
+    // Extract persona details from test cases
+    const budgetCase = testCases.find(tc => 
+      tc.name.toLowerCase().includes('budget') || tc.userInput.toLowerCase().includes('lakh') || tc.userInput.toLowerCase().includes('budget')
+    );
+    const educationCase = testCases.find(tc => 
+      tc.name.toLowerCase().includes('cgpa') || tc.name.toLowerCase().includes('academic') || tc.name.toLowerCase().includes('education')
+    );
+    const countryCase = testCases.find(tc => 
+      tc.name.toLowerCase().includes('country') || tc.name.toLowerCase().includes('destination')
+    );
 
-TEST SCENARIOS TO COVER (in order):
-${testCaseDescriptions}
+    // Build a simple persona with realistic answers
+    const persona = {
+      name: "Alex",
+      budget: budgetCase?.userInput || "around 15 to 20 lakh rupees",
+      education: educationCase?.userInput || "I completed my Bachelor's degree with a 7.5 CGPA",
+      country: countryCase?.userInput || "I'm interested in studying in Canada or the UK",
+    };
 
-INSTRUCTIONS:
-1. Start by engaging with the first test scenario
-2. After the agent responds adequately to each scenario, naturally transition to the next one
-3. You can transition by saying things like "I also wanted to ask about..." or "Another question I have is..."
-4. Keep track of which scenarios you've covered
-5. Make the conversation flow naturally - don't make it feel like a checklist
-6. For each scenario, ensure you get enough response from the agent to evaluate it
+    return `You are Alex, a test caller making a phone call to test a voice AI agent. Your job is to have a natural conversation while covering specific test scenarios.
 
-CONVERSATION RULES:
-- Keep responses natural and conversational (2-4 sentences)
-- Ask follow-up questions when the agent's response is incomplete
-- Don't end the conversation until you've covered all scenarios
-- Only say goodbye after the agent says goodbye first, or after covering all scenarios
+YOUR PERSONA (use these when asked):
+- Name: ${persona.name}
+- Budget: ${persona.budget}
+- Education: ${persona.education}  
+- Preferred destination: ${persona.country}
 
-RESPONSE FORMAT:
-Just provide your natural response as the test caller. No meta-commentary.`;
+=== TEST SCENARIOS TO COVER ===
+You need to naturally bring up or respond to these scenarios during the conversation:
+${testScenarios}
+
+=== HOW TO TEST ===
+1. Start with "Hello?" when the call begins
+2. Let the agent lead the conversation initially
+3. Answer their questions naturally using your persona details
+4. When appropriate, bring up topics from the test scenarios above
+5. If a test scenario involves a specific user input, use that exact input when relevant
+6. Keep responses short (1-2 sentences) but make sure to cover the test scenarios
+7. Ask follow-up questions to keep the conversation going
+8. Don't end the call until you've tried to cover most scenarios
+
+=== IMPORTANT ===
+- Be a natural, curious customer - not a robot reading a script
+- If the agent asks about something in your test scenarios, that's your chance to test it
+- Try to cover ALL ${testCases.length} test scenarios during this call
+- Don't rush through scenarios - let the conversation flow naturally`;
   }
 
   /**
-   * Generate test caller response that covers remaining test cases
+   * Generate test caller response - include remaining test cases to cover
    */
   private async generateBatchTestCallerResponse(
     conversationHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     remainingCases: SmartTestCase[],
     currentIndex: number
   ): Promise<{ text: string; testCaseId?: string }> {
-    const nextCase = remainingCases[0];
-    
     const messages = [...conversationHistory];
     
-    if (nextCase) {
-      messages.push({
-        role: 'user',
-        content: `Generate a response that naturally covers this test scenario: "${nextCase.scenario}". 
-User input to test: "${nextCase.userInput}"
-Make it conversational and natural. If this is not the first scenario, transition smoothly from the previous topic.`,
-      });
-    } else {
-      messages.push({
-        role: 'user',
-        content: 'All test scenarios have been covered. Generate a polite closing response.',
-      });
-    }
+    // Get the last agent message to understand what they asked
+    const lastAgentMessage = conversationHistory
+      .filter(m => m.role === 'user') // In our history, agent messages are stored as 'user'
+      .pop()?.content || '';
+    
+    // Build list of remaining scenarios to test
+    const remainingScenarios = remainingCases.length > 0 
+      ? remainingCases.map(tc => `- ${tc.name}: ${tc.userInput || tc.scenario}`).join('\n')
+      : 'All scenarios covered!';
+    
+    // Prompt that includes remaining test cases
+    const guidancePrompt = `The agent just said: "${lastAgentMessage}"
+
+REMAINING TEST SCENARIOS TO COVER:
+${remainingScenarios}
+
+As Alex (a test caller), respond naturally while trying to cover one of the remaining scenarios if relevant.
+
+RULES:
+- If the agent asked a question, answer it (use your persona details)
+- If you can naturally bring up one of the remaining scenarios, do it
+- Keep response to 1-2 sentences
+- Be curious and engaged
+- If agent is wrapping up but you have remaining scenarios, ask about something related to them
+- Don't try to end the conversation
+- Don't ask "how can I help" - you are the customer
+
+Respond naturally as Alex:`;
+
+    messages.push({
+      role: 'user',
+      content: guidancePrompt,
+    });
 
     try {
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: messages as any,
-        temperature: 0.7,
-        max_tokens: 200,
+        temperature: 0.6,
+        max_tokens: 80,
       });
 
+      const responseText = response.choices[0]?.message?.content?.trim() || "Okay, I understand.";
+      
+      // Try to match what was discussed to a test case for tracking
+      const relevantCase = this.findRelevantTestCase(lastAgentMessage, remainingCases);
+      
       return {
-        text: response.choices[0]?.message?.content?.trim() || "I have another question for you.",
-        testCaseId: nextCase?.id,
+        text: responseText,
+        testCaseId: relevantCase?.id,
       };
     } catch (error) {
       console.error('[BatchedExecutor] OpenAI error:', error);
       return {
-        text: nextCase ? nextCase.userInput : "Thank you for your help!",
-        testCaseId: nextCase?.id,
+        text: "Okay, please continue.",
+        testCaseId: undefined,
       };
     }
+  }
+
+  /**
+   * Find a test case that's relevant to the agent's current question
+   */
+  private findRelevantTestCase(
+    agentMessage: string, 
+    remainingCases: SmartTestCase[]
+  ): SmartTestCase | null {
+    if (!agentMessage || remainingCases.length === 0) return null;
+    
+    const agentLower = agentMessage.toLowerCase();
+    
+    // Common question patterns and their related test case keywords
+    const questionMappings: Array<{ patterns: RegExp[]; keywords: string[] }> = [
+      { 
+        patterns: [/budget/i, /how much/i, /price/i, /cost/i, /afford/i, /money/i, /spend/i, /lakh/i, /rupee/i],
+        keywords: ['budget', 'cost', 'price', 'money', 'afford', 'lakh', 'rupee', 'currency']
+      },
+      { 
+        patterns: [/name/i, /who.*(?:am|are|speaking)/i, /call you/i, /your name/i],
+        keywords: ['name', 'introduction', 'greeting']
+      },
+      { 
+        patterns: [/education/i, /degree/i, /academic/i, /study/i, /school/i, /college/i, /university/i, /cgpa/i, /gpa/i, /grade/i],
+        keywords: ['education', 'academic', 'degree', 'cgpa', 'gpa', 'grade', 'background', 'qualification']
+      },
+      { 
+        patterns: [/country/i, /where.*(?:want|like|go|study)/i, /destination/i, /location/i, /abroad/i],
+        keywords: ['country', 'destination', 'abroad', 'location', 'where']
+      },
+      { 
+        patterns: [/eligible/i, /qualify/i, /requirements/i, /criteria/i],
+        keywords: ['eligible', 'eligibility', 'qualify', 'requirement', 'criteria']
+      },
+      { 
+        patterns: [/email/i, /contact/i, /reach/i, /phone/i, /number/i],
+        keywords: ['email', 'contact', 'phone', 'number', 'reach']
+      },
+      { 
+        patterns: [/callback/i, /call.*back/i, /later/i, /schedule/i],
+        keywords: ['callback', 'call back', 'later', 'schedule']
+      },
+      {
+        patterns: [/thank/i, /goodbye/i, /bye/i, /helpful/i],
+        keywords: ['thank', 'goodbye', 'bye', 'end', 'closing']
+      }
+    ];
+    
+    // First try to match based on question patterns
+    for (const mapping of questionMappings) {
+      const matchesQuestion = mapping.patterns.some(p => p.test(agentMessage));
+      if (matchesQuestion) {
+        // Find a test case that matches these keywords
+        for (const tc of remainingCases) {
+          const tcText = `${tc.name} ${tc.scenario} ${tc.userInput} ${tc.category}`.toLowerCase();
+          const matchCount = mapping.keywords.filter(kw => tcText.includes(kw)).length;
+          if (matchCount >= 1) {
+            return tc;
+          }
+        }
+      }
+    }
+    
+    // Fallback: Look for keyword matches between agent's question and test cases
+    for (const tc of remainingCases) {
+      const testKeywords = [
+        ...tc.name.toLowerCase().split(/\s+/),
+        ...tc.scenario.toLowerCase().split(/\s+/),
+        ...(tc.category?.toLowerCase().split(/\s+/) || []),
+      ].filter(w => w.length > 3);
+      
+      // Check if agent is asking about something related to this test case
+      const matchCount = testKeywords.filter(keyword => 
+        agentLower.includes(keyword)
+      ).length;
+      
+      if (matchCount >= 2) {
+        return tc;
+      }
+    }
+    
+    // If agent is asking ANY question, return the first remaining case
+    const isAskingQuestion = /\?/.test(agentMessage) || 
+      /(?:what|where|when|how|who|which|could you|can you|would you|tell me)/i.test(agentMessage);
+    
+    if (isAskingQuestion && remainingCases.length > 0) {
+      return remainingCases[0];
+    }
+    
+    return null;
   }
 
   /**
@@ -411,14 +613,19 @@ Make it conversational and natural. If this is not the first scenario, transitio
     testedCount: number,
     totalCount: number
   ): boolean {
-    // End if all test cases have been covered
+    // Don't end too early - need at least some turns
+    if (turnCount < 10) {
+      return false;
+    }
+    
+    // End if all test cases have been covered and agent is wrapping up
     if (testedCount >= totalCount) {
       return true;
     }
     
-    // End if agent says goodbye and we've covered at least half
-    const goodbyePatterns = [/\bgoodbye\b/i, /\bbye\b/i, /take care/i];
-    if (turnCount >= 8 && testedCount >= totalCount / 2) {
+    // End if agent says goodbye and we've covered most cases
+    const goodbyePatterns = [/\bgoodbye\b/i, /\bbye\b/i, /take care/i, /have a (?:good|great|nice)/i];
+    if (turnCount >= 15 && testedCount >= totalCount * 0.7) {
       for (const pattern of goodbyePatterns) {
         if (pattern.test(agentMessage)) {
           return true;

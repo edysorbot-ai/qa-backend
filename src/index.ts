@@ -3,6 +3,9 @@ import { config } from './config';
 import { pool, connectWithRetry } from './db';
 import { initializeDatabase } from './db/migrations/init';
 import { addTestCaseColumns } from './db/migrations/003_add_test_case_columns';
+import { addPromptVersionsTable } from './db/migrations/007_add_prompt_versions';
+import { addConfigVersionsTable } from './db/migrations/008_add_config_versions';
+import { addTestCaseCategoryPriority } from './db/migrations/009_add_test_case_category_priority';
 
 const startServer = async () => {
   try {
@@ -17,6 +20,9 @@ const startServer = async () => {
     
     // Run additional migrations
     await addTestCaseColumns();
+    await addPromptVersionsTable();
+    await addConfigVersionsTable();
+    await addTestCaseCategoryPriority();
 
     // Start server
     app.listen(config.port, () => {

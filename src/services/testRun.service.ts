@@ -26,6 +26,36 @@ export class TestRunService {
     return result.rows;
   }
 
+  /**
+   * Find test runs by agent ID or by matching agent name in test run name
+   * This handles legacy test runs that were created before we started storing agent_id
+   */
+  async findByAgentIdOrName(agentId: string, userId: string, limit = 50): Promise<TestRun[]> {
+    // First get the agent name
+    const agentResult = await query(
+      'SELECT name FROM agents WHERE id = $1',
+      [agentId]
+    );
+    
+    let agentName = '';
+    if (agentResult.rows.length > 0) {
+      agentName = agentResult.rows[0].name;
+    }
+    
+    // Query for test runs that either:
+    // 1. Have the agent_id set
+    // 2. OR belong to this user and have the agent name in their name (legacy runs)
+    const result = await query(
+      `SELECT * FROM test_runs 
+       WHERE agent_id = $1 
+          OR (user_id = $2 AND agent_id IS NULL AND name ILIKE $3)
+       ORDER BY created_at DESC 
+       LIMIT $4`,
+      [agentId, userId, `%${agentName}%`, limit]
+    );
+    return result.rows;
+  }
+
   async create(data: CreateTestRunDTO): Promise<TestRun> {
     const result = await query(
       `INSERT INTO test_runs (user_id, agent_id, name, config)
@@ -94,8 +124,27 @@ export class TestRunService {
     const run = await this.findById(id);
     if (!run) return null;
 
+    // Join with test_cases to get test case names and compute passed boolean from status
     const results = await query(
-      'SELECT * FROM test_results WHERE test_run_id = $1 ORDER BY created_at',
+      `SELECT 
+        tr.*,
+        tc.name as test_case_name,
+        tc.scenario as test_case_scenario,
+        tc.expected_output as test_case_expected_output,
+        CASE WHEN tr.status = 'passed' THEN true WHEN tr.status = 'failed' THEN false ELSE null END as passed,
+        COALESCE(
+          CASE 
+            WHEN tr.metrics->>'intent_accuracy' IS NOT NULL THEN (tr.metrics->>'intent_accuracy')::float
+            WHEN tr.intent_match = true THEN 100.0
+            WHEN tr.intent_match = false THEN 0.0
+            ELSE 0.0
+          END,
+          0.0
+        ) as score
+       FROM test_results tr
+       LEFT JOIN test_cases tc ON tr.test_case_id = tc.id
+       WHERE tr.test_run_id = $1 
+       ORDER BY tr.created_at`,
       [id]
     );
 

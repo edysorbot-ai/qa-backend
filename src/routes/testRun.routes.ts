@@ -9,6 +9,9 @@ router.get('/', testRunController.getAll.bind(testRunController));
 // GET /api/test-runs/stats - Get test run statistics
 router.get('/stats', testRunController.getStats.bind(testRunController));
 
+// GET /api/test-runs/compare - Compare multiple test runs
+router.get('/compare', testRunController.compare.bind(testRunController));
+
 // GET /api/test-runs/:id - Get test run by ID with results
 router.get('/:id', testRunController.getById.bind(testRunController));
 

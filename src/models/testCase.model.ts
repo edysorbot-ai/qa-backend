@@ -8,6 +8,8 @@ export interface TestCase {
   expected_behavior?: string;
   key_topic?: string;
   test_type?: string;
+  category?: string;
+  priority?: 'high' | 'medium' | 'low';
   batch_compatible?: boolean;
   created_at: Date;
   updated_at: Date;
@@ -22,6 +24,8 @@ export interface CreateTestCaseDTO {
   expected_behavior?: string;
   key_topic?: string;
   test_type?: string;
+  category?: string;
+  priority?: 'high' | 'medium' | 'low';
   batch_compatible?: boolean;
 }
 
@@ -32,5 +36,7 @@ export interface UpdateTestCaseDTO {
   expected_behavior?: string;
   key_topic?: string;
   test_type?: string;
+  category?: string;
+  priority?: 'high' | 'medium' | 'low';
   batch_compatible?: boolean;
 }

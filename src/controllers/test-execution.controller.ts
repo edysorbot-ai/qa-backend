@@ -272,6 +272,8 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
         latency_ms,
         duration_ms,
         batch_id,
+        batch_name,
+        batch_order,
         user_transcript,
         agent_transcript,
         conversation_turns,
@@ -284,7 +286,7 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
         created_at
        FROM test_results
        WHERE test_run_id = $1
-       ORDER BY batch_id NULLS LAST, created_at`,
+       ORDER BY batch_order ASC NULLS LAST, created_at`,
       [testRunId]
     );
 
@@ -356,6 +358,8 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
           latencyMs: r.latency_ms,
           durationMs: r.duration_ms,
           batchId: r.batch_id,
+          batchName: r.batch_name,
+          batchOrder: r.batch_order,
           // Full conversation data
           userTranscript: r.user_transcript,
           agentTranscript: r.agent_transcript,
@@ -1101,6 +1105,10 @@ router.post('/analyze-for-batching', async (req: Request, res: Response) => {
  * 
  * This endpoint receives batches of test cases and executes them efficiently
  * Each batch = one voice call that tests multiple scenarios
+ * 
+ * Can accept either:
+ * - apiKey directly (legacy)
+ * - integrationId to look up API key from database (preferred)
  */
 router.post('/start-batched', async (req: Request, res: Response) => {
   try {
@@ -1108,7 +1116,9 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       name,
       provider,
       agentId,
-      apiKey,
+      internalAgentId, // Our database agent ID
+      apiKey: directApiKey,
+      integrationId,
       agentName,
       batches, // Array of { id, name, testCases: [...] }
       enableBatching = true,
@@ -1125,10 +1135,32 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       });
     }
 
-    if (!provider || !agentId || !apiKey || !batches || batches.length === 0) {
+    // Resolve API key - either from integration or directly provided
+    let apiKey = directApiKey;
+    let resolvedProvider = provider;
+    
+    if (integrationId && !directApiKey) {
+      // Look up API key from integration
+      const integrationResult = await pool.query(
+        'SELECT api_key, provider FROM integrations WHERE id = $1',
+        [integrationId]
+      );
+      
+      if (integrationResult.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'Integration not found',
+        });
+      }
+      
+      apiKey = integrationResult.rows[0].api_key;
+      resolvedProvider = integrationResult.rows[0].provider;
+    }
+
+    if (!resolvedProvider || !agentId || !apiKey || !batches || batches.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: provider, agentId, apiKey, batches',
+        error: 'Missing required fields: provider/integrationId, agentId, apiKey/integrationId, batches',
       });
     }
 
@@ -1149,6 +1181,19 @@ router.post('/start-batched', async (req: Request, res: Response) => {
     const testRunId = uuidv4();
     const testRunName = name || `Batched Test Run - ${new Date().toISOString()}`;
 
+    // Try to resolve internal agent ID
+    let resolvedInternalAgentId = internalAgentId;
+    if (!resolvedInternalAgentId && agentId) {
+      // Look up internal agent ID from external agent ID
+      const agentResult = await pool.query(
+        'SELECT id FROM agents WHERE external_agent_id = $1 OR id = $2',
+        [agentId, agentId]
+      );
+      if (agentResult.rows.length > 0) {
+        resolvedInternalAgentId = agentResult.rows[0].id;
+      }
+    }
+
     // Collect all test cases from all batches
     interface BatchTestCase {
       id: string;
@@ -1164,42 +1209,56 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       testCases: BatchTestCase[];
     }
     
-    const allTestCases: BatchTestCase[] = [];
+    // Count total test cases
+    let totalTestCases = 0;
     batches.forEach((batch: Batch) => {
-      allTestCases.push(...batch.testCases);
+      totalTestCases += batch.testCases.length;
     });
 
-    // Create test run in database
+    // Create test run in database WITH agent_id
     await pool.query(
-      `INSERT INTO test_runs (id, name, status, user_id, total_tests, started_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [testRunId, testRunName, 'running', userId, allTestCases.length, new Date(), new Date()]
+      `INSERT INTO test_runs (id, name, status, user_id, agent_id, total_tests, started_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [testRunId, testRunName, 'running', userId, resolvedInternalAgentId, totalTestCases, new Date(), new Date()]
     );
 
-    // Insert all test cases as pending
-    for (const tc of allTestCases) {
-      const resultId = uuidv4();
-      const testCaseId = tc.id.startsWith('tc-') ? uuidv4() : tc.id;
-      await pool.query(
-        `INSERT INTO test_results (
-          id, test_run_id, test_case_id, scenario, user_input, expected_response, 
-          category, status, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-          resultId,
-          testRunId,
-          testCaseId,
-          tc.scenario,
-          tc.name,
-          tc.expectedOutcome,
-          tc.category,
-          'pending',
-          new Date(),
-        ]
-      );
+    // Insert all test cases as pending WITH their batch_id, batch_name, and batch_order
+    // This allows the frontend to group them correctly and maintain execution order
+    let batchOrder = 0;
+    for (const batch of batches) {
+      batchOrder++;
+      for (const tc of batch.testCases) {
+        const resultId = uuidv4();
+        const testCaseId = tc.id.startsWith('tc-') ? uuidv4() : tc.id;
+        await pool.query(
+          `INSERT INTO test_results (
+            id, test_run_id, test_case_id, scenario, user_input, expected_response, 
+            category, status, batch_id, batch_name, batch_order, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [
+            resultId,
+            testRunId,
+            testCaseId,
+            tc.scenario,
+            tc.name,
+            tc.expectedOutcome,
+            tc.category,
+            'pending',
+            batch.id,       // Include batch_id from the start
+            batch.name,     // Include batch_name (category) for display
+            batchOrder,     // Include batch_order to preserve execution sequence
+            new Date(),
+          ]
+        );
+      }
     }
 
-    console.log(`[BatchedExecution] Created test run with ${batches.length} batches, ${allTestCases.length} test cases`);
+    console.log(`[BatchedExecution] Created test run with ${batches.length} batches, ${totalTestCases} test cases`);
+    console.log(`[BatchedExecution] Batch details:`);
+    batches.forEach((batch: Batch, index: number) => {
+      console.log(`[BatchedExecution]   Batch ${index + 1}: "${batch.name}" - ${batch.testCases.length} test cases`);
+      console.log(`[BatchedExecution]     Test cases: ${batch.testCases.map(tc => tc.name).join(', ')}`);
+    });
     console.log(`[BatchedExecution] Batching enabled: ${enableBatching}`);
 
     res.json({
@@ -1207,14 +1266,14 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       testRunId,
       message: `Batched test run started with ${batches.length} calls`,
       batches: batches.length,
-      totalTestCases: allTestCases.length,
+      totalTestCases: totalTestCases,
     });
 
     // Execute batches asynchronously
     executeBatchedCalls(
       testRunId,
       batches,
-      { provider, agentId, apiKey },
+      { provider: resolvedProvider, agentId, apiKey },
       enableBatching
     ).catch((error: Error) => {
       console.error('Batched test run failed:', error);
