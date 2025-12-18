@@ -57,14 +57,20 @@ interface ConversationResult {
 }
 
 export class ConversationalTestAgentService {
-  private openai: OpenAI;
+  private openai: OpenAI | null = null;
   private elevenLabsApiKey: string;
 
   constructor() {
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
     this.elevenLabsApiKey = process.env.ELEVENLABS_API_KEY || '';
+  }
+
+  private getOpenAI(): OpenAI {
+    if (!this.openai) {
+      this.openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+      });
+    }
+    return this.openai;
   }
 
   /**
@@ -1178,7 +1184,7 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
         });
       }
 
-      const response = await this.openai.chat.completions.create({
+      const response = await this.getOpenAI().chat.completions.create({
         model: 'gpt-4o-mini',
         messages: messages as any,
         temperature: 0.7,
