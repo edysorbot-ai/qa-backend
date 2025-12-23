@@ -1,4 +1,4 @@
-export type Provider = 'elevenlabs' | 'retell' | 'vapi' | 'openai_realtime';
+export type Provider = 'elevenlabs' | 'retell' | 'vapi' | 'openai_realtime' | 'haptik';
 
 export interface Integration {
   id: string;

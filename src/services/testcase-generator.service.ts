@@ -29,6 +29,7 @@ interface GeneratedTestCase {
   name: string;
   scenario: string;
   category: string;
+  keyTopic: string; // Logical topic for batching (e.g., "Budget Validation", "Eligibility Check")
   expectedOutcome: string;
   priority: 'high' | 'medium' | 'low';
 }
@@ -200,18 +201,26 @@ Create test cases that cover:
 8. Interruption handling
 9. Fallback behaviors
 
+IMPORTANT: Group test cases by LOGICAL TOPIC. A topic represents a semantic area that the agent handles.
+Examples of topics: "Budget Validation", "Eligibility Check", "Greeting", "Call Transfer", "Product Information", etc.
+Test cases with the SAME topic can be tested together in a single call.
+
 Return a JSON object with the following structure:
 {
   "testCases": [
     {
       "name": "Short descriptive name",
       "scenario": "Detailed description of the test scenario and what the user will say/do",
-      "category": "Category name (e.g., 'Happy Path', 'Edge Case', 'Error Handling')",
+      "category": "Test type (e.g., 'Happy Path', 'Edge Case', 'Error Handling')",
+      "keyTopic": "Logical topic being tested (e.g., 'Budget Validation', 'Eligibility Check', 'Greeting')",
       "expectedOutcome": "What should happen when this test is executed",
       "priority": "high|medium|low"
     }
   ]
 }
+
+CRITICAL: keyTopic must be a SPECIFIC, SEMANTIC topic from the agent's domain. NOT generic test categories.
+Test cases with the same keyTopic should be logically related and can be tested in sequence.
 
 Generate exactly ${maxTestCases} diverse test cases that thoroughly test the agent.`;
 
@@ -251,6 +260,7 @@ Generate ${maxTestCases} comprehensive test cases as a JSON object.`;
       name: tc.name || `Test Case ${index + 1}`,
       scenario: tc.scenario || '',
       category: tc.category || 'General',
+      keyTopic: tc.keyTopic || tc.key_topic || tc.category || 'General',
       expectedOutcome: tc.expectedOutcome || '',
       priority: tc.priority || 'medium',
     }));

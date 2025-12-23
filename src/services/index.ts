@@ -5,5 +5,8 @@ export * from './testCase.service';
 export * from './testRun.service';
 export * from './testResult.service';
 export * from './direct-test-executor.service';
+export * from './workflow.service';
+export * from './workflow-test-executor.service';
 export { realTestExecutor, type TestResult } from './real-test-executor.service';
 export { conversationalTestAgent } from './conversational-test-agent.service';
+export { promptSuggestionService } from './prompt-suggestion.service';

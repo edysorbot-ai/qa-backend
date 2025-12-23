@@ -18,6 +18,9 @@ router.get('/:id', testRunController.getById.bind(testRunController));
 // POST /api/test-runs - Create new test run
 router.post('/', testRunController.create.bind(testRunController));
 
+// POST /api/test-runs/start-workflow - Start a workflow-based test run
+router.post('/start-workflow', testRunController.startWorkflow.bind(testRunController));
+
 // POST /api/test-runs/:id/start - Start test run execution
 router.post('/:id/start', testRunController.start.bind(testRunController));
 

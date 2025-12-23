@@ -255,11 +255,12 @@ export class AgentController {
 
   /**
    * Generate test cases for an agent based on its prompt
+   * If preview=true in request body, returns test cases without saving
    */
   async generateTestCases(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const { maxTestCases = 35 } = req.body;
+      const { maxTestCases = 35, preview = false } = req.body;
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
       const userId = user.id;
@@ -279,6 +280,26 @@ export class AgentController {
         maxTestCases
       );
 
+      // If preview mode, return test cases without saving
+      if (preview) {
+        const previewTestCases = result.testCases.map((tc: any, index: number) => ({
+          id: `preview-${index}-${Date.now()}`, // Temporary ID for preview
+          name: tc.name,
+          scenario: tc.scenario,
+          expected_behavior: tc.expectedOutcome || tc.expected_behavior || '',
+          expectedOutcome: tc.expectedOutcome || tc.expected_behavior || '',
+          category: tc.category || 'General',
+          key_topic: tc.keyTopic || tc.key_topic || tc.category || 'General',
+          priority: tc.priority || 'medium',
+        }));
+
+        return res.json({
+          agentAnalysis: result.agentAnalysis,
+          testCases: previewTestCases,
+          preview: true,
+        });
+      }
+
       // Auto-save the generated test cases
       const { testCaseService } = await import('../services/testCase.service');
       
@@ -290,6 +311,7 @@ export class AgentController {
           scenario: tc.scenario,
           expected_behavior: tc.expectedOutcome || tc.expected_behavior || '',
           category: tc.category || 'General',
+          key_topic: tc.keyTopic || tc.key_topic || tc.category || 'General',
           priority: tc.priority || 'medium',
           batch_compatible: true,
         }))
@@ -353,6 +375,7 @@ export class AgentController {
           scenario: tc.scenario,
           expected_behavior: tc.expectedOutcome || tc.expected_behavior,
           category: tc.category || 'General',
+          key_topic: tc.keyTopic || tc.key_topic || tc.category || 'General',
           priority: tc.priority || 'medium',
           batch_compatible: true,
         }))
@@ -361,6 +384,366 @@ export class AgentController {
       res.json({ testCases: createdTestCases });
     } catch (error) {
       next(error);
+    }
+  }
+
+  /**
+   * Analyze agent's prompt using AI
+   */
+  async analyzePrompt(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+
+      const agent = await agentService.findById(id);
+      if (!agent) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
+
+      if (!agent.prompt) {
+        return res.status(400).json({ error: 'No prompt available to analyze' });
+      }
+
+      // Use OpenAI to analyze the prompt
+      const OpenAI = (await import('openai')).default;
+      const { config } = await import('../config');
+      
+      const openai = new OpenAI({
+        apiKey: config.openai.apiKey,
+        organization: config.openai.orgId,
+      });
+
+      const systemPrompt = `You are an expert voice AI agent analyst. Analyze the given voice agent's system prompt to understand its purpose, capabilities, expected behaviors, strengths, and weaknesses.
+
+Return a JSON object with the following structure:
+{
+  "purpose": "A clear, concise description of what this agent is designed to do (1-2 sentences)",
+  "capabilities": ["List of specific capabilities the agent has based on the prompt"],
+  "expectedBehaviors": ["List of expected behaviors and guidelines from the prompt"],
+  "strengths": ["List of strengths in this prompt design"],
+  "weaknesses": ["List of areas that could be improved"]
+}
+
+Be specific and detailed in your analysis. Extract actual information from the prompt, not generic placeholders.`;
+
+      const userPrompt = `Analyze this voice agent prompt:
+
+Agent Name: ${agent.name}
+
+System Prompt:
+${agent.prompt}
+
+Configuration:
+${JSON.stringify(agent.config || {}, null, 2)}
+
+Provide your analysis as a JSON object.`;
+
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.3,
+        response_format: { type: 'json_object' },
+      });
+
+      const analysis = JSON.parse(response.choices[0].message.content || '{}');
+
+      res.json({
+        purpose: analysis.purpose || 'Purpose could not be determined',
+        capabilities: analysis.capabilities || [],
+        expectedBehaviors: analysis.expectedBehaviors || [],
+        strengths: analysis.strengths || [],
+        weaknesses: analysis.weaknesses || [],
+      });
+    } catch (error: any) {
+      console.error('Error analyzing prompt:', error);
+      res.status(500).json({ error: error?.message || 'Failed to analyze prompt' });
+    }
+  }
+
+  /**
+   * Extract dynamic variables from agent's prompt
+   * Dynamic variables are placeholders like {{variable_name}} or {variable_name}
+   */
+  async getDynamicVariables(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+
+      const agent = await agentService.findById(id);
+      if (!agent) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
+
+      const prompt = agent.prompt || '';
+      const config = agent.config || {};
+
+      // Extract variables from prompt using multiple patterns
+      const variables: Array<{
+        name: string;
+        pattern: string;
+        source: string;
+        defaultValue?: string;
+        description?: string;
+      }> = [];
+
+      // Pattern 1: {{variable_name}} - Handlebars style
+      const handlebarsPattern = /\{\{([^}]+)\}\}/g;
+      let match;
+      while ((match = handlebarsPattern.exec(prompt)) !== null) {
+        const varName = match[1].trim();
+        if (!variables.find(v => v.name === varName)) {
+          variables.push({
+            name: varName,
+            pattern: `{{${varName}}}`,
+            source: 'prompt',
+            description: `Dynamic variable found in prompt`,
+          });
+        }
+      }
+
+      // Pattern 2: {variable_name} - Single brace style
+      const singleBracePattern = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+      while ((match = singleBracePattern.exec(prompt)) !== null) {
+        const varName = match[1].trim();
+        if (!variables.find(v => v.name === varName)) {
+          variables.push({
+            name: varName,
+            pattern: `{${varName}}`,
+            source: 'prompt',
+            description: `Dynamic variable found in prompt`,
+          });
+        }
+      }
+
+      // Pattern 3: $variable_name or ${variable_name} - Shell style
+      const shellPattern = /\$\{?([a-zA-Z_][a-zA-Z0-9_]*)\}?/g;
+      while ((match = shellPattern.exec(prompt)) !== null) {
+        const varName = match[1].trim();
+        if (!variables.find(v => v.name === varName)) {
+          variables.push({
+            name: varName,
+            pattern: match[0],
+            source: 'prompt',
+            description: `Dynamic variable found in prompt`,
+          });
+        }
+      }
+
+      // Pattern 4: [variable_name] - Square bracket style
+      const bracketPattern = /\[([A-Z_][A-Z0-9_]*)\]/g;
+      while ((match = bracketPattern.exec(prompt)) !== null) {
+        const varName = match[1].trim();
+        if (!variables.find(v => v.name === varName)) {
+          variables.push({
+            name: varName,
+            pattern: `[${varName}]`,
+            source: 'prompt',
+            description: `Dynamic variable found in prompt`,
+          });
+        }
+      }
+
+      // Check config for dynamic variable definitions (provider-specific)
+      if (config.dynamic_variables || config.dynamicVariables) {
+        const configVars = config.dynamic_variables || config.dynamicVariables;
+        if (Array.isArray(configVars)) {
+          configVars.forEach((v: any) => {
+            const varName = v.name || v.key || v.variable;
+            if (varName && !variables.find(existing => existing.name === varName)) {
+              variables.push({
+                name: varName,
+                pattern: `{{${varName}}}`,
+                source: 'config',
+                defaultValue: v.default || v.defaultValue,
+                description: v.description || `Defined in agent config`,
+              });
+            }
+          });
+        } else if (typeof configVars === 'object') {
+          Object.entries(configVars).forEach(([key, value]: [string, any]) => {
+            if (!variables.find(v => v.name === key)) {
+              variables.push({
+                name: key,
+                pattern: `{{${key}}}`,
+                source: 'config',
+                defaultValue: typeof value === 'string' ? value : value?.default,
+                description: value?.description || `Defined in agent config`,
+              });
+            }
+          });
+        }
+      }
+
+      // Check for Retell-specific dynamic variables webhook
+      const dynamicVariablesWebhook = config.inbound_dynamic_variables_webhook_url ||
+        config.metadata?.inbound_dynamic_variables_webhook_url;
+
+      res.json({
+        variables,
+        webhookUrl: dynamicVariablesWebhook,
+        totalCount: variables.length,
+      });
+    } catch (error: any) {
+      console.error('Error extracting dynamic variables:', error);
+      res.status(500).json({ error: error?.message || 'Failed to extract dynamic variables' });
+    }
+  }
+
+  /**
+   * Get knowledge base information for an agent
+   */
+  async getKnowledgeBase(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+
+      const agent = await agentService.findById(id);
+      if (!agent) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
+
+      // Get integration to fetch from provider
+      const integration = await integrationService.findById(agent.integration_id);
+      if (!integration) {
+        return res.status(404).json({ error: 'Integration not found' });
+      }
+
+      const config = agent.config || {};
+      const knowledgeBase: {
+        items: Array<{
+          id: string;
+          name: string;
+          type: string;
+          description?: string;
+          url?: string;
+          status?: string;
+          createdAt?: string;
+        }>;
+        provider: string;
+        totalCount: number;
+      } = {
+        items: [],
+        provider: agent.provider,
+        totalCount: 0,
+      };
+
+      // Extract knowledge base based on provider
+      switch (agent.provider) {
+        case 'vapi':
+          // VAPI stores knowledge base in model.knowledgeBase
+          if (config.model?.knowledgeBase) {
+            const kb = config.model.knowledgeBase;
+            if (Array.isArray(kb)) {
+              knowledgeBase.items = kb.map((item: any, index: number) => ({
+                id: item.id || `kb-${index}`,
+                name: item.name || item.fileName || `Knowledge Base ${index + 1}`,
+                type: item.type || item.fileType || 'document',
+                description: item.description,
+                url: item.url || item.fileUrl,
+                status: item.status || 'active',
+              }));
+            } else if (kb.fileIds || kb.provider) {
+              knowledgeBase.items = [{
+                id: kb.id || 'kb-1',
+                name: kb.name || 'Knowledge Base',
+                type: kb.provider || 'custom',
+                description: `Provider: ${kb.provider || 'N/A'}`,
+                status: 'active',
+              }];
+            }
+          }
+          break;
+
+        case 'retell':
+          // Retell might store KB in general_tools or custom locations
+          if (config.metadata?.knowledge_base || config.knowledge_base) {
+            const kb = config.metadata?.knowledge_base || config.knowledge_base;
+            if (Array.isArray(kb)) {
+              knowledgeBase.items = kb.map((item: any, index: number) => ({
+                id: item.id || `kb-${index}`,
+                name: item.name || `Knowledge Base ${index + 1}`,
+                type: item.type || 'document',
+                description: item.description,
+                url: item.url,
+                status: item.status || 'active',
+              }));
+            }
+          }
+          // Check tools for retrieval-based KB
+          if (config.metadata?.tools || config.tools) {
+            const tools = config.metadata?.tools || config.tools;
+            const kbTools = tools?.filter((t: any) => 
+              t.type === 'retrieval' || t.type === 'knowledge_base' || t.name?.includes('knowledge')
+            );
+            if (kbTools?.length) {
+              kbTools.forEach((tool: any, index: number) => {
+                knowledgeBase.items.push({
+                  id: tool.id || `tool-kb-${index}`,
+                  name: tool.name || `Knowledge Tool ${index + 1}`,
+                  type: 'retrieval_tool',
+                  description: tool.description,
+                  status: 'active',
+                });
+              });
+            }
+          }
+          break;
+
+        case 'elevenlabs':
+          // ElevenLabs - check fullConfig for knowledge base
+          if (config.fullConfig?.knowledge_base || config.knowledge_base) {
+            const kb = config.fullConfig?.knowledge_base || config.knowledge_base;
+            if (Array.isArray(kb)) {
+              knowledgeBase.items = kb.map((item: any, index: number) => ({
+                id: item.id || `kb-${index}`,
+                name: item.name || item.file_name || `Document ${index + 1}`,
+                type: item.type || 'document',
+                description: item.description,
+                url: item.url,
+                status: item.status || 'active',
+                createdAt: item.created_at,
+              }));
+            }
+          }
+          break;
+
+        case 'openai_realtime':
+          // OpenAI Assistants use file_search tool with vector stores
+          if (config.metadata?.toolResources?.file_search) {
+            const fileSearch = config.metadata.toolResources.file_search;
+            if (fileSearch.vector_store_ids) {
+              fileSearch.vector_store_ids.forEach((vsId: string, index: number) => {
+                knowledgeBase.items.push({
+                  id: vsId,
+                  name: `Vector Store ${index + 1}`,
+                  type: 'vector_store',
+                  description: 'OpenAI Vector Store for file search',
+                  status: 'active',
+                });
+              });
+            }
+          }
+          // Check for code_interpreter files
+          if (config.metadata?.toolResources?.code_interpreter?.file_ids) {
+            config.metadata.toolResources.code_interpreter.file_ids.forEach((fileId: string, index: number) => {
+              knowledgeBase.items.push({
+                id: fileId,
+                name: `Code Interpreter File ${index + 1}`,
+                type: 'code_interpreter_file',
+                description: 'File for code interpreter',
+                status: 'active',
+              });
+            });
+          }
+          break;
+      }
+
+      knowledgeBase.totalCount = knowledgeBase.items.length;
+
+      res.json(knowledgeBase);
+    } catch (error: any) {
+      console.error('Error fetching knowledge base:', error);
+      res.status(500).json({ error: error?.message || 'Failed to fetch knowledge base' });
     }
   }
 }

@@ -32,7 +32,7 @@ interface TestCase {
 }
 
 interface AgentConfig {
-  provider: 'elevenlabs' | 'retell' | 'vapi';
+  provider: 'elevenlabs' | 'retell' | 'vapi' | 'haptik';
   agentId: string;
   apiKey: string;
 }
@@ -97,6 +97,8 @@ export class ConversationalTestAgentService {
           return await this.testWithRetell(testCase, agentConfig, startTime);
         case 'vapi':
           return await this.testWithVAPI(testCase, agentConfig, startTime);
+        case 'haptik':
+          return await this.testWithHaptik(testCase, agentConfig, startTime);
         default:
           throw new Error(`Unsupported provider: ${agentConfig.provider}`);
       }
@@ -1913,6 +1915,302 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
 
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Test with Haptik Conversational AI
+   */
+  private async testWithHaptik(
+    testCase: TestCase,
+    agentConfig: AgentConfig,
+    startTime: number
+  ): Promise<ConversationResult> {
+    return new Promise(async (resolve, reject) => {
+      const transcript: ConversationTurn[] = [];
+      let callId = '';
+      let sessionId = '';
+
+      try {
+        // Create Haptik voice call
+        const createResponse = await fetch(`https://api.haptik.ai/v1/bots/${agentConfig.agentId}/voice/call`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${agentConfig.apiKey}`,
+            'Content-Type': 'application/json',
+            'X-Haptik-Client': 'qa-platform',
+          },
+          body: JSON.stringify({
+            channel: 'web',
+          }),
+        });
+
+        if (!createResponse.ok) {
+          throw new Error(`Failed to create Haptik call: ${await createResponse.text()}`);
+        }
+
+        const callData = await createResponse.json() as { 
+          call_id: string; 
+          websocket_url?: string;
+          session_id: string;
+        };
+        callId = callData.call_id;
+        sessionId = callData.session_id;
+
+        const systemPrompt = this.buildTestCallerPrompt(testCase);
+        const conversationHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+          { role: 'system', content: systemPrompt }
+        ];
+
+        // If WebSocket URL is provided, use real-time audio
+        if (callData.websocket_url) {
+          const ws = new WebSocket(callData.websocket_url, {
+            headers: { 'Authorization': `Bearer ${agentConfig.apiKey}` },
+          });
+
+          let currentBotMessage = '';
+          let turnCount = 0;
+          const maxTurns = 30;
+          let conversationComplete = false;
+
+          const timeout = setTimeout(() => {
+            conversationComplete = true;
+            fetch(`https://api.haptik.ai/v1/voice/calls/${callId}/end`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${agentConfig.apiKey}` },
+            });
+          }, 300000);
+
+          ws.on('message', async (data: Buffer) => {
+            try {
+              const message = JSON.parse(data.toString());
+
+              if (message.type === 'bot_response') {
+                currentBotMessage = message.content || message.text || '';
+              } else if (message.type === 'turn_end' || message.type === 'bot_turn_end') {
+                if (currentBotMessage && !conversationComplete) {
+                  turnCount++;
+
+                  transcript.push({
+                    role: 'ai_agent',
+                    content: currentBotMessage,
+                    timestamp: Date.now(),
+                  });
+
+                  conversationHistory.push({ role: 'user', content: currentBotMessage });
+
+                  if (this.shouldEndConversation(currentBotMessage, turnCount, maxTurns, testCase)) {
+                    conversationComplete = true;
+                    const finalResponse = await this.generateTestCallerResponse(conversationHistory, true);
+                    if (finalResponse) {
+                      transcript.push({
+                        role: 'test_caller',
+                        content: finalResponse,
+                        timestamp: Date.now(),
+                      });
+                      const audio = await this.textToSpeech(finalResponse);
+                      if (audio) {
+                        ws.send(JSON.stringify({ type: 'audio', audio: audio.toString('base64') }));
+                      }
+                    }
+                    setTimeout(() => {
+                      fetch(`https://api.haptik.ai/v1/voice/calls/${callId}/end`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${agentConfig.apiKey}` },
+                      });
+                    }, 3000);
+                  } else {
+                    const testResponse = await this.generateTestCallerResponse(conversationHistory);
+                    if (testResponse) {
+                      transcript.push({
+                        role: 'test_caller',
+                        content: testResponse,
+                        timestamp: Date.now(),
+                      });
+                      conversationHistory.push({ role: 'assistant', content: testResponse });
+                      const audio = await this.textToSpeech(testResponse);
+                      if (audio) {
+                        ws.send(JSON.stringify({ type: 'audio', audio: audio.toString('base64') }));
+                      }
+                    }
+                  }
+                  currentBotMessage = '';
+                }
+              }
+            } catch (e) {
+              // Binary audio data
+            }
+          });
+
+          ws.on('close', async () => {
+            clearTimeout(timeout);
+
+            // Fetch call data from Haptik
+            const haptikCallData = await this.fetchHaptikCallData(callId, agentConfig.apiKey);
+
+            resolve({
+              callId,
+              durationMs: Date.now() - startTime,
+              transcript: haptikCallData?.transcript || transcript,
+              recordingUrl: haptikCallData?.recordingUrl || null,
+              agentTranscript: transcript.filter(t => t.role === 'ai_agent').map(t => t.content).join('\n'),
+              testCallerTranscript: transcript.filter(t => t.role === 'test_caller').map(t => t.content).join('\n'),
+              messageCount: transcript.length,
+              success: true,
+            });
+          });
+
+          ws.on('error', (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+        } else {
+          // Fall back to text-based API testing
+          console.log(`[ConversationalTestAgent] Using Haptik text API (no WebSocket URL)`);
+          
+          let turnCount = 0;
+          const maxTurns = 30;
+          let conversationComplete = false;
+
+          // Send initial greeting or wait for bot greeting
+          const initialResponse = await fetch(`https://api.haptik.ai/v1/bots/${agentConfig.agentId}/message`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${agentConfig.apiKey}`,
+              'Content-Type': 'application/json',
+              'X-Haptik-Client': 'qa-platform',
+            },
+            body: JSON.stringify({
+              message: 'hello',
+              session_id: sessionId,
+              channel: 'api',
+            }),
+          });
+
+          if (!initialResponse.ok) {
+            throw new Error(`Failed to start Haptik conversation: ${await initialResponse.text()}`);
+          }
+
+          let botResponse = await initialResponse.json() as { response: string; intent?: string };
+          
+          while (!conversationComplete && turnCount < maxTurns) {
+            turnCount++;
+
+            // Record bot response
+            transcript.push({
+              role: 'ai_agent',
+              content: botResponse.response,
+              timestamp: Date.now(),
+            });
+
+            conversationHistory.push({ role: 'user', content: botResponse.response });
+
+            if (this.shouldEndConversation(botResponse.response, turnCount, maxTurns, testCase)) {
+              conversationComplete = true;
+              const finalResponse = await this.generateTestCallerResponse(conversationHistory, true);
+              if (finalResponse) {
+                transcript.push({
+                  role: 'test_caller',
+                  content: finalResponse,
+                  timestamp: Date.now(),
+                });
+              }
+              break;
+            }
+
+            // Generate test caller response
+            const testResponse = await this.generateTestCallerResponse(conversationHistory);
+            if (!testResponse) break;
+
+            transcript.push({
+              role: 'test_caller',
+              content: testResponse,
+              timestamp: Date.now(),
+            });
+
+            conversationHistory.push({ role: 'assistant', content: testResponse });
+
+            // Send to Haptik
+            const msgResponse = await fetch(`https://api.haptik.ai/v1/bots/${agentConfig.agentId}/message`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${agentConfig.apiKey}`,
+                'Content-Type': 'application/json',
+                'X-Haptik-Client': 'qa-platform',
+              },
+              body: JSON.stringify({
+                message: testResponse,
+                session_id: sessionId,
+                channel: 'api',
+              }),
+            });
+
+            if (!msgResponse.ok) {
+              console.error(`[ConversationalTestAgent] Haptik message error:`, await msgResponse.text());
+              break;
+            }
+
+            botResponse = await msgResponse.json() as { response: string; intent?: string };
+          }
+
+          resolve({
+            callId,
+            durationMs: Date.now() - startTime,
+            transcript,
+            recordingUrl: null,
+            agentTranscript: transcript.filter(t => t.role === 'ai_agent').map(t => t.content).join('\n'),
+            testCallerTranscript: transcript.filter(t => t.role === 'test_caller').map(t => t.content).join('\n'),
+            messageCount: transcript.length,
+            success: transcript.length > 0,
+          });
+        }
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Fetch call data from Haptik API
+   */
+  private async fetchHaptikCallData(
+    callId: string,
+    apiKey: string
+  ): Promise<{
+    transcript: ConversationTurn[];
+    recordingUrl: string | null;
+  } | null> {
+    try {
+      await this.sleep(2000);
+
+      const response = await fetch(`https://api.haptik.ai/v1/voice/calls/${callId}/transcript`, {
+        headers: { 
+          'Authorization': `Bearer ${apiKey}`,
+          'X-Haptik-Client': 'qa-platform',
+        },
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json() as {
+        turns?: Array<{ role: 'user' | 'bot'; text: string; timestamp: string }>;
+        transcript?: string;
+        recording_url?: string;
+      };
+
+      const transcript: ConversationTurn[] = (data.turns || []).map((turn) => ({
+        role: turn.role === 'bot' ? 'ai_agent' : 'test_caller',
+        content: turn.text,
+        timestamp: new Date(turn.timestamp).getTime(),
+      }));
+
+      return {
+        transcript,
+        recordingUrl: data.recording_url || null,
+      };
+    } catch (error) {
+      console.error(`[ConversationalTestAgent] Error fetching Haptik call data:`, error);
+      return null;
+    }
   }
 }
 

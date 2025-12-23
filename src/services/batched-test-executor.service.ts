@@ -14,6 +14,8 @@ import {
   smartTestCaseGeneratorService,
 } from './smart-testcase-generator.service';
 import { TTSService } from './tts.service';
+import { promptSuggestionService } from './prompt-suggestion.service';
+import { PromptSuggestion } from '../models/testResult.model';
 
 interface BatchTestResult {
   testCaseId: string;
@@ -23,6 +25,7 @@ interface BatchTestResult {
   actualResponse: string;
   metrics: Record<string, any>;
   turnsCovered: number[];
+  promptSuggestions?: PromptSuggestion[];
 }
 
 interface BatchExecutionResult {
@@ -703,10 +706,12 @@ Analyze and return results as JSON.`;
       // Create a map of test cases for lookup
       const testCaseMap = new Map(testCases.map(tc => [tc.id, tc]));
       
-      return (analysis.results || []).map((r: any) => {
+      // Process results and generate AI suggestions for failed tests
+      const results = await Promise.all((analysis.results || []).map(async (r: any) => {
         // Look up the original test case to ensure we use exact name
         const originalTc = testCaseMap.get(r.testCaseId);
-        return {
+        
+        const result: BatchTestResult = {
           testCaseId: r.testCaseId,
           // Use the original test case name, not what GPT returned
           testCaseName: originalTc?.name || r.testCaseName,
@@ -716,7 +721,30 @@ Analyze and return results as JSON.`;
           metrics: { reasoning: r.reasoning },
           turnsCovered: r.turnsCovered || [],
         };
-      });
+
+        // Generate AI-powered prompt suggestions for failed tests
+        if (!result.passed && originalTc) {
+          try {
+            const suggestions = await promptSuggestionService.generatePromptSuggestions({
+              testCaseName: originalTc.name,
+              category: originalTc.category || 'General',
+              scenario: originalTc.scenario,
+              userInput: originalTc.userInput,
+              expectedResponse: originalTc.expectedOutcome,
+              actualResponse: result.actualResponse,
+              agentTranscript: transcriptText,
+            });
+            result.promptSuggestions = suggestions;
+            console.log(`[BatchedExecutor] Generated ${suggestions.length} AI suggestions for failed test: ${originalTc.name}`);
+          } catch (error) {
+            console.error(`[BatchedExecutor] Failed to generate suggestions for ${originalTc.name}:`, error);
+          }
+        }
+
+        return result;
+      }));
+
+      return results;
     } catch (error) {
       console.error('[BatchedExecutor] Analysis error:', error);
       

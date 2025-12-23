@@ -18,6 +18,13 @@ export interface TestResultMetrics {
   hallucination_detected?: boolean;
 }
 
+export interface PromptSuggestion {
+  issue: string;
+  suggestion: string;
+  location: string;
+  priority: 'high' | 'medium' | 'low';
+}
+
 export interface TestResult {
   id: string;
   test_run_id: string;
@@ -33,6 +40,7 @@ export interface TestResult {
   latency_ms?: number;
   conversation_turns: ConversationTurn[];
   metrics: TestResultMetrics;
+  prompt_suggestions?: PromptSuggestion[];
   error_message?: string;
   started_at?: Date;
   completed_at?: Date;
@@ -56,6 +64,7 @@ export interface UpdateTestResultDTO {
   latency_ms?: number;
   conversation_turns?: ConversationTurn[];
   metrics?: TestResultMetrics;
+  prompt_suggestions?: PromptSuggestion[];
   error_message?: string;
   started_at?: Date;
   completed_at?: Date;

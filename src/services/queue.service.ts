@@ -18,7 +18,7 @@ export interface TestJobData {
     category: string;
   };
   agentConfig: {
-    provider: 'elevenlabs' | 'retell' | 'vapi';
+    provider: 'elevenlabs' | 'retell' | 'vapi' | 'haptik';
     agentId: string;
     apiKey: string;
     agentName: string;

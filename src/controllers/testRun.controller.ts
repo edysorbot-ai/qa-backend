@@ -3,6 +3,10 @@ import { testRunService } from '../services/testRun.service';
 import { testResultService } from '../services/testResult.service';
 import { testCaseService } from '../services/testCase.service';
 import { userService } from '../services/user.service';
+import { agentService } from '../services/agent.service';
+import { integrationService } from '../services/integration.service';
+import { workflowTestExecutorService } from '../services/workflow-test-executor.service';
+import { WorkflowExecutionPlan } from '../models/workflow.model';
 
 export class TestRunController {
   async getAll(req: Request, res: Response, next: NextFunction) {
@@ -227,6 +231,9 @@ export class TestRunController {
           score: result.score || 0,
           metrics: result.metrics || {},
           actualResponse: result.actual_response,
+          errorMessage: result.error_message,
+          expectedBehavior: result.expected_behavior,
+          scenario: result.scenario,
         } : null;
       });
     });
@@ -284,6 +291,119 @@ export class TestRunController {
       }
 
       res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Start a workflow-based test run
+   */
+  async startWorkflow(req: Request, res: Response, next: NextFunction) {
+    try {
+      const clerkUser = (req as any).auth;
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+
+      const { agent_id, name, execution_plan, execution_mode } = req.body;
+
+      if (!agent_id) {
+        return res.status(400).json({ error: 'Agent ID is required' });
+      }
+
+      if (!execution_plan) {
+        return res.status(400).json({ error: 'Execution plan is required' });
+      }
+
+      const executionPlan = execution_plan as WorkflowExecutionPlan;
+
+      // Get agent details
+      const agent = await agentService.findById(agent_id);
+      if (!agent) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
+
+      // Get integration for API key
+      const integration = agent.integration_id 
+        ? await integrationService.findById(agent.integration_id)
+        : null;
+      
+      if (!integration) {
+        return res.status(400).json({ error: 'Agent integration not found' });
+      }
+
+      // Count total test cases from execution plan
+      const totalTestCases = executionPlan.executionGroups.reduce(
+        (sum, group) => sum + group.calls.reduce((s, call) => s + call.testCases.length, 0),
+        0
+      );
+
+      // Create test run
+      const testRun = await testRunService.create({
+        user_id: user.id,
+        agent_id,
+        name: name || `Workflow Test - ${new Date().toLocaleString()}`,
+        config: {
+          execution_mode: execution_mode || 'workflow',
+          execution_plan: executionPlan,
+        },
+      });
+
+      // Update with total tests
+      await testRunService.update(testRun.id, {
+        total_tests: totalTestCases,
+        status: 'running',
+        started_at: new Date(),
+      });
+
+      // Execute the workflow in background
+      const agentConfig = {
+        provider: agent.provider,
+        agentId: agent.external_agent_id || '',
+        apiKey: integration.api_key,
+      };
+
+      const agentPrompt = agent.prompt || '';
+
+      // Start execution asynchronously
+      setImmediate(async () => {
+        try {
+          const result = await workflowTestExecutorService.executeWorkflow(
+            testRun.id,
+            executionPlan,
+            agentConfig,
+            agentPrompt,
+            async (progress) => {
+              // Update test run progress
+              console.log(`[WorkflowController] Progress: ${progress.completedCalls}/${progress.totalCalls} calls`);
+            }
+          );
+
+          // Update test run with final results
+          await testRunService.update(testRun.id, {
+            status: result.status === 'completed' ? 'completed' : 'failed',
+            completed_at: new Date(),
+            passed_tests: result.passedTestCases,
+            failed_tests: result.failedTestCases,
+          });
+
+          console.log(`[WorkflowController] Workflow execution completed: ${result.status}`);
+        } catch (error) {
+          console.error('[WorkflowController] Workflow execution error:', error);
+          await testRunService.update(testRun.id, {
+            status: 'failed',
+            completed_at: new Date(),
+          });
+        }
+      });
+
+      res.status(201).json({
+        testRun: {
+          ...testRun,
+          total_tests: totalTestCases,
+          status: 'running',
+        },
+        message: 'Workflow test run started',
+      });
     } catch (error) {
       next(error);
     }

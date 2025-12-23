@@ -281,6 +281,7 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
         intent_match,
         output_match,
         agent_audio_url,
+        prompt_suggestions,
         started_at,
         completed_at,
         created_at
@@ -371,6 +372,8 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
           metrics: parsedMetrics || {},
           intentMatch: r.intent_match,
           outputMatch: r.output_match,
+          // AI-generated prompt suggestions for failed tests
+          promptSuggestions: r.prompt_suggestions || [],
           // Timestamps
           startedAt: r.started_at,
           completedAt: r.completed_at,
@@ -1122,6 +1125,8 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       agentName,
       batches, // Array of { id, name, testCases: [...] }
       enableBatching = true,
+      enableConcurrency = false,
+      concurrencyCount = 1,
     } = req.body;
 
     // Get authenticated user ID from Clerk
@@ -1260,6 +1265,7 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       console.log(`[BatchedExecution]     Test cases: ${batch.testCases.map(tc => tc.name).join(', ')}`);
     });
     console.log(`[BatchedExecution] Batching enabled: ${enableBatching}`);
+    console.log(`[BatchedExecution] Concurrency enabled: ${enableConcurrency}, count: ${concurrencyCount}`);
 
     res.json({
       success: true,
@@ -1267,6 +1273,9 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       message: `Batched test run started with ${batches.length} calls`,
       batches: batches.length,
       totalTestCases: totalTestCases,
+      enableBatching,
+      enableConcurrency,
+      concurrencyCount,
     });
 
     // Execute batches asynchronously
@@ -1274,7 +1283,9 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       testRunId,
       batches,
       { provider: resolvedProvider, agentId, apiKey },
-      enableBatching
+      enableBatching,
+      enableConcurrency,
+      concurrencyCount
     ).catch((error: Error) => {
       console.error('Batched test run failed:', error);
       pool.query(
@@ -1295,21 +1306,25 @@ router.post('/start-batched', async (req: Request, res: Response) => {
 /**
  * Execute batched voice calls
  * Each batch is a single call with multiple test scenarios
+ * Supports concurrency for parallel execution
  */
 async function executeBatchedCalls(
   testRunId: string,
   batches: Array<{ id: string; name: string; testCases: Array<{ id: string; name: string; scenario: string; expectedOutcome: string; category: string }> }>,
   agentConfig: { provider: string; agentId: string; apiKey: string },
-  enableBatching: boolean
+  enableBatching: boolean,
+  enableConcurrency: boolean = false,
+  concurrencyCount: number = 1
 ): Promise<void> {
   console.log(`[BatchedExecution] Starting execution for ${testRunId}`);
   console.log(`[BatchedExecution] Total batches: ${batches.length}`);
+  console.log(`[BatchedExecution] Concurrency: ${enableConcurrency ? `enabled (${concurrencyCount})` : 'disabled (sequential)'}`);
   
   const { batchedTestExecutor } = await import('../services/batched-test-executor.service');
   
-  for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
-    console.log(`[BatchedExecution] Executing batch ${i + 1}/${batches.length}: ${batch.name} (${batch.testCases.length} test cases)`);
+  // Helper function to execute a single batch
+  const executeSingleBatch = async (batch: typeof batches[0], batchIndex: number) => {
+    console.log(`[BatchedExecution] Executing batch ${batchIndex + 1}/${batches.length}: ${batch.name} (${batch.testCases.length} test cases)`);
     
     try {
       // Update test cases to 'running' status
@@ -1381,21 +1396,15 @@ async function executeBatchedCalls(
       
       // Store results for each test case with transcript data
       console.log(`[BatchedExecution] Saving batch ${batch.id} with ${results.length} results for ${batch.testCases.length} test cases`);
-      console.log(`[BatchedExecution] User transcript length: ${userTranscript.length}`);
-      console.log(`[BatchedExecution] Agent transcript length: ${agentTranscript.length}`);
-      console.log(`[BatchedExecution] Test case names in batch: ${batch.testCases.map(tc => tc.name).join(', ')}`);
-      console.log(`[BatchedExecution] Result names from analysis: ${results.map(r => r.testCaseName).join(', ')}`);
       
       // Create a map from result names to results for quick lookup
       const resultMap = new Map(results.map(r => [r.testCaseName, r]));
       
-      // Update ALL test cases in this batch - use the original batch.testCases 
-      // to ensure we update every test case, not just the ones GPT returned
+      // Update ALL test cases in this batch
       for (const tc of batch.testCases) {
-        // Try to find the result by test case name
         const result = resultMap.get(tc.name);
         
-        const updateQuery = await pool.query(
+        await pool.query(
           `UPDATE test_results 
            SET status = $1, actual_response = $2, 
                metrics = $3, completed_at = $4,
@@ -1404,8 +1413,9 @@ async function executeBatchedCalls(
                user_transcript = $7,
                agent_transcript = $8,
                batch_id = $9,
-               agent_audio_url = $10
-           WHERE test_run_id = $11 AND user_input = $12`,
+               agent_audio_url = $10,
+               prompt_suggestions = $11
+           WHERE test_run_id = $12 AND user_input = $13`,
           [
             result ? (result.passed ? 'passed' : 'failed') : 'failed',
             result?.actualResponse || 'No analysis result',
@@ -1417,11 +1427,11 @@ async function executeBatchedCalls(
             agentTranscript,
             batch.id,
             audioUrl,
+            JSON.stringify(result?.promptSuggestions || []),
             testRunId,
-            tc.name, // Use the original test case name from the batch
+            tc.name,
           ]
         );
-        console.log(`[BatchedExecution] Updated "${tc.name}", rows affected: ${updateQuery.rowCount}, batch_id: ${batch.id}, audioUrl: ${audioUrl}, found result: ${!!result}`);
       }
       
       console.log(`[BatchedExecution] Batch ${batch.id} completed: ${results.filter(r => r.passed).length}/${results.length} passed, ${totalTurns} turns, ${durationMs}ms`);
@@ -1438,6 +1448,27 @@ async function executeBatchedCalls(
           [new Date(), `Batch execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`, testRunId, tc.name]
         );
       }
+    }
+  };
+
+  // Execute batches - either concurrently or sequentially
+  if (enableConcurrency && concurrencyCount > 1) {
+    // Execute in parallel with limited concurrency
+    console.log(`[BatchedExecution] Running ${batches.length} batches with concurrency ${concurrencyCount}`);
+    
+    // Process batches in chunks
+    for (let i = 0; i < batches.length; i += concurrencyCount) {
+      const chunk = batches.slice(i, i + concurrencyCount);
+      const chunkPromises = chunk.map((batch, idx) => executeSingleBatch(batch, i + idx));
+      
+      console.log(`[BatchedExecution] Starting concurrent round ${Math.floor(i / concurrencyCount) + 1}: ${chunk.length} batches`);
+      await Promise.all(chunkPromises);
+      console.log(`[BatchedExecution] Completed concurrent round ${Math.floor(i / concurrencyCount) + 1}`);
+    }
+  } else {
+    // Execute sequentially
+    for (let i = 0; i < batches.length; i++) {
+      await executeSingleBatch(batches[i], i);
     }
   }
   

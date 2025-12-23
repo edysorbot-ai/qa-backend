@@ -6,6 +6,8 @@ import { addTestCaseColumns } from './db/migrations/003_add_test_case_columns';
 import { addPromptVersionsTable } from './db/migrations/007_add_prompt_versions';
 import { addConfigVersionsTable } from './db/migrations/008_add_config_versions';
 import { addTestCaseCategoryPriority } from './db/migrations/009_add_test_case_category_priority';
+import { addPromptSuggestionsColumn } from './db/migrations/010_add_prompt_suggestions';
+import { createTestWorkflowsTable } from './db/migrations/011_create_test_workflows';
 
 const startServer = async () => {
   try {
@@ -23,6 +25,8 @@ const startServer = async () => {
     await addPromptVersionsTable();
     await addConfigVersionsTable();
     await addTestCaseCategoryPriority();
+    await addPromptSuggestionsColumn();
+    await createTestWorkflowsTable();
 
     // Start server
     app.listen(config.port, () => {

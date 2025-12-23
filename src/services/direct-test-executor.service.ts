@@ -49,7 +49,7 @@ export interface DirectTestResult {
 
 // Agent configuration
 export interface AgentConfig {
-  provider: 'elevenlabs' | 'retell' | 'vapi';
+  provider: 'elevenlabs' | 'retell' | 'vapi' | 'haptik';
   agentId: string;
   apiKey: string;
   agentName?: string;

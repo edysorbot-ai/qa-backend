@@ -8,7 +8,7 @@ import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 
 export interface CallConfig {
-  provider: 'elevenlabs' | 'retell' | 'vapi';
+  provider: 'elevenlabs' | 'retell' | 'vapi' | 'haptik';
   agentId: string;
   apiKey: string;
   timeout?: number;
@@ -355,9 +355,9 @@ export class VAPICaller extends EventEmitter {
  * Factory function to create the appropriate caller based on provider
  */
 export function createCaller(
-  provider: 'elevenlabs' | 'retell' | 'vapi',
+  provider: 'elevenlabs' | 'retell' | 'vapi' | 'haptik',
   apiKey: string
-): ElevenLabsCaller | RetellCaller | VAPICaller {
+): ElevenLabsCaller | RetellCaller | VAPICaller | HaptikCaller {
   switch (provider) {
     case 'elevenlabs':
       return new ElevenLabsCaller(apiKey);
@@ -365,7 +365,230 @@ export function createCaller(
       return new RetellCaller(apiKey);
     case 'vapi':
       return new VAPICaller(apiKey);
+    case 'haptik':
+      return new HaptikCaller(apiKey);
     default:
       throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
+
+/**
+ * Haptik Caller
+ * Handles voice calls with Haptik conversational AI platform
+ */
+export class HaptikCaller extends EventEmitter {
+  private apiKey: string;
+  private ws: WebSocket | null = null;
+  private callId: string | null = null;
+  private sessionId: string | null = null;
+  private startTime: number = 0;
+
+  constructor(apiKey: string) {
+    super();
+    this.apiKey = apiKey;
+  }
+
+  /**
+   * Create a web call with Haptik
+   */
+  async createCall(botId: string): Promise<{ callId: string; webSocketUrl?: string; sessionId: string }> {
+    const response = await fetch('https://api.haptik.ai/v1/bots/' + botId + '/voice/call', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        'X-Haptik-Client': 'qa-platform',
+      },
+      body: JSON.stringify({
+        channel: 'web',
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to create Haptik call: ${await response.text()}`);
+    }
+
+    const data = await response.json() as { call_id: string; websocket_url?: string; session_id: string };
+    this.callId = data.call_id;
+    this.sessionId = data.session_id;
+    this.startTime = Date.now();
+
+    return {
+      callId: data.call_id,
+      webSocketUrl: data.websocket_url,
+      sessionId: data.session_id,
+    };
+  }
+
+  /**
+   * Connect to Haptik WebSocket for real-time voice streaming
+   */
+  async connectWebSocket(webSocketUrl: string): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      this.ws = new WebSocket(webSocketUrl, {
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+      });
+
+      this.ws.on('open', () => {
+        console.log('Haptik WebSocket connected');
+        resolve(this.ws!);
+      });
+
+      this.ws.on('message', (data: Buffer) => {
+        this.handleMessage(data);
+      });
+
+      this.ws.on('error', reject);
+      this.ws.on('close', () => this.emit('close'));
+    });
+  }
+
+  private handleMessage(data: Buffer) {
+    try {
+      const message = JSON.parse(data.toString());
+
+      switch (message.type) {
+        case 'bot_response':
+          this.emit('bot_response', message);
+          break;
+        case 'audio':
+          this.emit('agent_audio', Buffer.from(message.audio, 'base64'));
+          break;
+        case 'transcript':
+          this.emit('transcript', message);
+          break;
+        case 'intent_detected':
+          this.emit('intent_detected', message);
+          break;
+        case 'error':
+          this.emit('error', new Error(message.error));
+          break;
+      }
+    } catch {
+      // Binary audio data
+      this.emit('audio', data);
+    }
+  }
+
+  /**
+   * Send audio to the bot
+   */
+  sendAudio(audioBuffer: Buffer) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'audio',
+        audio: audioBuffer.toString('base64'),
+      }));
+    }
+  }
+
+  /**
+   * Send text message to the bot (for text-based testing)
+   */
+  async sendMessage(botId: string, message: string): Promise<{
+    response: string;
+    intent?: string;
+    confidence?: number;
+  } | null> {
+    try {
+      const response = await fetch(`https://api.haptik.ai/v1/bots/${botId}/message`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          'X-Haptik-Client': 'qa-platform',
+        },
+        body: JSON.stringify({
+          message,
+          session_id: this.sessionId,
+          channel: 'api',
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to send message: ${await response.text()}`);
+      }
+
+      const data = await response.json() as {
+        response: string;
+        intent?: string;
+        confidence?: number;
+      };
+
+      return data;
+    } catch (error) {
+      console.error('Error sending message to Haptik:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get call transcript after the call ends
+   */
+  async getTranscript(): Promise<{
+    transcript: string;
+    turns: Array<{ role: 'user' | 'bot'; text: string; timestamp: string }>;
+    duration: number;
+  } | null> {
+    if (!this.callId) return null;
+
+    try {
+      const response = await fetch(`https://api.haptik.ai/v1/voice/calls/${this.callId}/transcript`, {
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'X-Haptik-Client': 'qa-platform',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to get transcript: ${await response.text()}`);
+      }
+
+      return await response.json() as {
+        transcript: string;
+        turns: Array<{ role: 'user' | 'bot'; text: string; timestamp: string }>;
+        duration: number;
+      };
+    } catch (error) {
+      console.error('Error getting Haptik transcript:', error);
+      return null;
+    }
+  }
+
+  /**
+   * End the call
+   */
+  async endCall(): Promise<void> {
+    if (this.callId) {
+      try {
+        await fetch(`https://api.haptik.ai/v1/voice/calls/${this.callId}/end`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+            'X-Haptik-Client': 'qa-platform',
+          },
+        });
+      } catch (error) {
+        console.error('Error ending Haptik call:', error);
+      }
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+
+  getCallId(): string | null {
+    return this.callId;
+  }
+
+  getSessionId(): string | null {
+    return this.sessionId;
+  }
+
+  getDuration(): number {
+    return Date.now() - this.startTime;
   }
 }

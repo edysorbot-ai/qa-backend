@@ -1,4 +1,5 @@
 export type TestRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type ExecutionMode = 'standard' | 'batched' | 'workflow';
 
 export interface TestRun {
   id: string;
@@ -12,6 +13,9 @@ export interface TestRun {
   started_at?: Date;
   completed_at?: Date;
   config: TestRunConfig;
+  execution_mode?: ExecutionMode;
+  execution_plan?: any;
+  workflow_id?: string;
   created_at: Date;
 }
 
@@ -21,6 +25,8 @@ export interface TestRunConfig {
   parallel_execution?: boolean;
   max_concurrent?: number;
   timeout_ms?: number;
+  execution_mode?: ExecutionMode;
+  execution_plan?: any;
 }
 
 export interface CreateTestRunDTO {
