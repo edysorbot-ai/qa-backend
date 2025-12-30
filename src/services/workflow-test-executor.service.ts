@@ -67,7 +67,7 @@ export class WorkflowTestExecutorService {
   async executeWorkflow(
     testRunId: string,
     executionPlan: WorkflowExecutionPlan,
-    agentConfig: { provider: string; agentId: string; apiKey: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
     agentPrompt: string,
     onProgress?: (progress: WorkflowProgress) => void
   ): Promise<WorkflowExecutionResult> {
@@ -194,7 +194,7 @@ export class WorkflowTestExecutorService {
    */
   private async executeCall(
     call: CallExecution,
-    agentConfig: { provider: string; agentId: string; apiKey: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
     agentPrompt: string,
     testRunId: string
   ): Promise<CallExecutionResult> {
@@ -233,6 +233,8 @@ export class WorkflowTestExecutorService {
           requiresSeparateCall: false,
           estimatedTurns: 2,
           testType: 'happy_path' as const,
+          isCallClosing: false,
+          batchPosition: 'any' as const,
         })),
         estimatedDuration: 180, // 3 minutes in seconds
         primaryTopic: call.callLabel,
@@ -286,7 +288,7 @@ export class WorkflowTestExecutorService {
    */
   private async executeConcurrentCalls(
     calls: CallExecution[],
-    agentConfig: { provider: string; agentId: string; apiKey: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
     agentPrompt: string,
     testRunId: string
   ): Promise<CallExecutionResult[]> {

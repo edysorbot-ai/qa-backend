@@ -1662,179 +1662,242 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
   }
 
   /**
-   * Test with VAPI
+   * Test with VAPI using text-based simulation
+   * 
+   * VAPI requires WebRTC (browser) or phone calls for real voice calls.
+   * For server-side testing, we simulate the conversation by:
+   * 1. Fetching the VAPI assistant's system prompt and configuration
+   * 2. Using OpenAI to simulate what the VAPI assistant would respond
+   * 3. Conducting a multi-turn text conversation
+   * 
+   * This provides meaningful test results for validating the agent's logic
+   * without needing actual voice infrastructure.
    */
   private async testWithVAPI(
     testCase: TestCase,
     agentConfig: AgentConfig,
     startTime: number
   ): Promise<ConversationResult> {
-    return new Promise(async (resolve, reject) => {
-      const transcript: ConversationTurn[] = [];
-      let callId = '';
+    const transcript: ConversationTurn[] = [];
+    const callId = `vapi-sim-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-      try {
-        // Create VAPI web call
-        const createResponse = await fetch('https://api.vapi.ai/call/web', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${agentConfig.apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            assistantId: agentConfig.agentId,
-          }),
+    try {
+      console.log(`[ConversationalTestAgent] Starting VAPI text simulation for: ${testCase.name}`);
+
+      // Step 1: Fetch the VAPI assistant's configuration
+      const assistantConfig = await this.fetchVAPIAssistantConfig(agentConfig.agentId, agentConfig.apiKey);
+      
+      if (!assistantConfig) {
+        throw new Error('Failed to fetch VAPI assistant configuration');
+      }
+
+      console.log(`[ConversationalTestAgent] VAPI assistant prompt: ${assistantConfig.systemPrompt?.substring(0, 100)}...`);
+      console.log(`[ConversationalTestAgent] VAPI first message: ${assistantConfig.firstMessage}`);
+
+      // Step 2: Build conversation history for the agent simulation
+      const agentConversation: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+      
+      if (assistantConfig.systemPrompt) {
+        agentConversation.push({ role: 'system', content: assistantConfig.systemPrompt });
+      }
+
+      // Step 3: Build test caller prompt
+      const testCallerPrompt = this.buildTestCallerPrompt(testCase);
+      const testCallerConversation: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: testCallerPrompt }
+      ];
+
+      // Step 4: Start with the agent's first message (if configured)
+      let turnCount = 0;
+      const maxTurns = 15;
+      
+      if (assistantConfig.firstMessage) {
+        transcript.push({
+          role: 'ai_agent',
+          content: assistantConfig.firstMessage,
+          timestamp: Date.now(),
         });
+        agentConversation.push({ role: 'assistant', content: assistantConfig.firstMessage });
+        testCallerConversation.push({ role: 'user', content: assistantConfig.firstMessage });
+        turnCount++;
+      }
 
-        if (!createResponse.ok) {
-          throw new Error(`Failed to create VAPI call: ${await createResponse.text()}`);
+      // Step 5: Simulate multi-turn conversation
+      while (turnCount < maxTurns) {
+        // Generate test caller response
+        const testCallerResponse = await this.generateTestCallerResponse(testCallerConversation);
+        
+        if (!testCallerResponse) {
+          console.log(`[ConversationalTestAgent] Test caller ended conversation`);
+          break;
         }
 
-        const { id: vapiCallId, webCallUrl } = await createResponse.json() as { 
-          id: string; 
-          webCallUrl: string;
-        };
-        callId = vapiCallId;
+        transcript.push({
+          role: 'test_caller',
+          content: testCallerResponse,
+          timestamp: Date.now(),
+        });
+        agentConversation.push({ role: 'user', content: testCallerResponse });
+        testCallerConversation.push({ role: 'assistant', content: testCallerResponse });
 
-        const systemPrompt = this.buildTestCallerPrompt(testCase);
-        const conversationHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-          { role: 'system', content: systemPrompt }
-        ];
+        // Check if test caller is ending the conversation
+        if (this.isGoodbyeMessage(testCallerResponse)) {
+          console.log(`[ConversationalTestAgent] Test caller said goodbye`);
+          break;
+        }
 
-        // VAPI uses Daily.co for WebRTC, but we can use their WebSocket API
-        const ws = new WebSocket(webCallUrl);
+        // Generate agent response (simulating VAPI assistant)
+        const agentResponse = await this.generateVAPIAgentResponse(agentConversation, assistantConfig);
         
-        let currentAgentMessage = '';
-        let turnCount = 0;
-        const maxTurns = 30; // High safety limit - ends naturally on goodbye
-        let conversationComplete = false;
+        if (!agentResponse) {
+          console.log(`[ConversationalTestAgent] Agent ended conversation`);
+          break;
+        }
 
-        const timeout = setTimeout(() => {
-          conversationComplete = true;
-          // End VAPI call
-          fetch(`https://api.vapi.ai/call/${callId}/stop`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${agentConfig.apiKey}` },
-          });
-        }, 300000);
-
-        ws.on('message', async (data: Buffer) => {
-          try {
-            const message = JSON.parse(data.toString());
-
-            if (message.type === 'transcript' && message.role === 'assistant') {
-              currentAgentMessage = message.transcript || '';
-            } else if (message.type === 'speech-end' && message.role === 'assistant') {
-              if (currentAgentMessage && !conversationComplete) {
-                turnCount++;
-                
-                transcript.push({
-                  role: 'ai_agent',
-                  content: currentAgentMessage,
-                  timestamp: Date.now(),
-                });
-
-                conversationHistory.push({ role: 'user', content: currentAgentMessage });
-
-                if (this.shouldEndConversation(currentAgentMessage, turnCount, maxTurns, testCase)) {
-                  conversationComplete = true;
-                  setTimeout(() => {
-                    fetch(`https://api.vapi.ai/call/${callId}/stop`, {
-                      method: 'POST',
-                      headers: { 'Authorization': `Bearer ${agentConfig.apiKey}` },
-                    });
-                  }, 3000);
-                } else {
-                  const testResponse = await this.generateTestCallerResponse(conversationHistory);
-                  if (testResponse) {
-                    transcript.push({
-                      role: 'test_caller',
-                      content: testResponse,
-                      timestamp: Date.now(),
-                    });
-                    conversationHistory.push({ role: 'assistant', content: testResponse });
-                    // VAPI accepts audio or we can use their say endpoint
-                    // For now, send text command
-                    ws.send(JSON.stringify({
-                      type: 'say',
-                      text: testResponse,
-                    }));
-                  }
-                }
-                currentAgentMessage = '';
-              }
-            }
-          } catch (e) {
-            // Binary audio
-          }
+        transcript.push({
+          role: 'ai_agent',
+          content: agentResponse,
+          timestamp: Date.now(),
         });
+        agentConversation.push({ role: 'assistant', content: agentResponse });
+        testCallerConversation.push({ role: 'user', content: agentResponse });
+        
+        turnCount++;
 
-        ws.on('close', async () => {
-          clearTimeout(timeout);
-          
-          // Fetch call data from VAPI
-          const callData = await this.fetchVAPICallData(callId, agentConfig.apiKey);
-
-          resolve({
-            callId,
-            durationMs: Date.now() - startTime,
-            transcript: callData?.transcript || transcript,
-            recordingUrl: callData?.recordingUrl || null,
-            agentTranscript: transcript.filter(t => t.role === 'ai_agent').map(t => t.content).join('\n'),
-            testCallerTranscript: transcript.filter(t => t.role === 'test_caller').map(t => t.content).join('\n'),
-            messageCount: transcript.length,
-            success: true,
-          });
-        });
-
-        ws.on('error', (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        });
-
-      } catch (error) {
-        reject(error);
+        // Check if agent is ending the conversation
+        if (this.shouldEndConversation(agentResponse, turnCount, maxTurns, testCase)) {
+          console.log(`[ConversationalTestAgent] Agent signaled end of conversation`);
+          break;
+        }
       }
-    });
+
+      console.log(`[ConversationalTestAgent] VAPI simulation completed with ${transcript.length} turns`);
+
+      return {
+        callId,
+        durationMs: Date.now() - startTime,
+        transcript,
+        recordingUrl: null, // No recording in simulation mode
+        agentTranscript: transcript.filter(t => t.role === 'ai_agent').map(t => t.content).join('\n'),
+        testCallerTranscript: transcript.filter(t => t.role === 'test_caller').map(t => t.content).join('\n'),
+        messageCount: transcript.length,
+        success: true,
+      };
+
+    } catch (error) {
+      console.error(`[ConversationalTestAgent] VAPI simulation failed:`, error);
+      return {
+        callId,
+        durationMs: Date.now() - startTime,
+        transcript,
+        recordingUrl: null,
+        agentTranscript: transcript.filter(t => t.role === 'ai_agent').map(t => t.content).join('\n'),
+        testCallerTranscript: transcript.filter(t => t.role === 'test_caller').map(t => t.content).join('\n'),
+        messageCount: transcript.length,
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
   }
 
   /**
-   * Fetch call data from VAPI API
+   * Fetch VAPI assistant configuration
    */
-  private async fetchVAPICallData(
-    callId: string,
+  private async fetchVAPIAssistantConfig(
+    assistantId: string,
     apiKey: string
   ): Promise<{
-    transcript: ConversationTurn[];
-    recordingUrl: string | null;
+    systemPrompt: string | null;
+    firstMessage: string | null;
+    model: string | null;
+    provider: string | null;
   } | null> {
     try {
-      await this.sleep(2000);
-
-      const response = await fetch(`https://api.vapi.ai/call/${callId}`, {
+      const response = await fetch(`https://api.vapi.ai/assistant/${assistantId}`, {
         headers: { 'Authorization': `Bearer ${apiKey}` },
       });
 
-      if (!response.ok) return null;
+      if (!response.ok) {
+        console.error(`[ConversationalTestAgent] Failed to fetch VAPI assistant: ${await response.text()}`);
+        return null;
+      }
 
       const data = await response.json() as {
-        messages?: Array<{ role: string; content: string }>;
-        recordingUrl?: string;
+        model?: {
+          messages?: Array<{ role: string; content: string }>;
+          systemPrompt?: string;
+          provider?: string;
+          model?: string;
+        };
+        firstMessage?: string;
       };
 
-      const transcript: ConversationTurn[] = (data.messages || []).map((msg) => ({
-        role: msg.role === 'assistant' ? 'ai_agent' : 'test_caller',
-        content: msg.content,
-        timestamp: Date.now(),
-      }));
+      // Extract system prompt from model.messages or model.systemPrompt
+      let systemPrompt: string | null = null;
+      if (data.model?.messages && Array.isArray(data.model.messages)) {
+        const systemMsg = data.model.messages.find(m => m.role === 'system');
+        if (systemMsg) {
+          systemPrompt = systemMsg.content;
+        }
+      }
+      if (!systemPrompt && data.model?.systemPrompt) {
+        systemPrompt = data.model.systemPrompt;
+      }
 
       return {
-        transcript,
-        recordingUrl: data.recordingUrl || null,
+        systemPrompt,
+        firstMessage: data.firstMessage || null,
+        model: data.model?.model || null,
+        provider: data.model?.provider || null,
       };
     } catch (error) {
+      console.error(`[ConversationalTestAgent] Error fetching VAPI assistant:`, error);
       return null;
     }
+  }
+
+  /**
+   * Generate a response simulating the VAPI agent
+   */
+  private async generateVAPIAgentResponse(
+    conversation: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    config: { systemPrompt: string | null; model: string | null; provider: string | null }
+  ): Promise<string | null> {
+    try {
+      const openai = this.getOpenAI();
+      
+      // Use the same model the VAPI assistant is configured with, or default to gpt-4o-mini
+      const model = (config.model?.includes('gpt') ? config.model : 'gpt-4o-mini') as 'gpt-4o-mini' | 'gpt-4o' | 'gpt-4' | 'gpt-3.5-turbo';
+      
+      const response = await openai.chat.completions.create({
+        model,
+        messages: conversation,
+        temperature: 0.7,
+        max_tokens: 300,
+      });
+
+      return response.choices[0]?.message?.content || null;
+    } catch (error) {
+      console.error(`[ConversationalTestAgent] Error generating VAPI agent response:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if a message is a goodbye message
+   */
+  private isGoodbyeMessage(message: string): boolean {
+    const goodbyePatterns = [
+      /\bgoodbye\b/i,
+      /\bbye\b/i,
+      /\btake care\b/i,
+      /\bhave a (good|great|nice) (day|one)\b/i,
+      /\bthank you.*that's all\b/i,
+      /\bthat's (all|everything)\b.*\bthank/i,
+      /\bno more questions\b/i,
+      /\bnothing else\b/i,
+    ];
+    return goodbyePatterns.some(pattern => pattern.test(message));
   }
 
   /**

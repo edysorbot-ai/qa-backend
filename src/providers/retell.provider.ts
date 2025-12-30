@@ -6,10 +6,14 @@
 import {
   VoiceProviderClient,
   ProviderValidationResult,
+  ProviderLimits,
   VoiceAgent,
 } from './provider.interface';
 
 const RETELL_BASE_URL = 'https://api.retellai.com';
+
+// Retell default limits (they don't expose this via API, but these are typical)
+const RETELL_DEFAULT_CONCURRENCY = 5;
 
 interface RetellAgent {
   agent_id: string;
@@ -194,6 +198,129 @@ export class RetellProvider implements VoiceProviderClient {
       console.error('Error listing Retell voices:', error);
       return [];
     }
+  }
+
+  /**
+   * Get provider limits including concurrency
+   * Note: Retell doesn't expose concurrency limits via API, using defaults
+   */
+  async getLimits(apiKey: string): Promise<ProviderLimits> {
+    try {
+      // Try to get account info if available
+      // Retell doesn't have a direct limits endpoint, so we use defaults
+      const agents = await this.listAgents(apiKey);
+      
+      return {
+        concurrencyLimit: RETELL_DEFAULT_CONCURRENCY,
+        source: 'default',
+      };
+    } catch (error) {
+      console.error('[Retell] Error getting limits:', error);
+      return {
+        concurrencyLimit: RETELL_DEFAULT_CONCURRENCY,
+        source: 'default',
+      };
+    }
+  }
+
+  /**
+   * Create a web call to get access token for WebSocket connection
+   * @see https://docs.retellai.com/api-references/create-web-call
+   */
+  async createWebCall(
+    apiKey: string,
+    agentId: string,
+    metadata?: Record<string, any>
+  ): Promise<{
+    callId: string;
+    accessToken: string;
+    agentId: string;
+    callStatus: string;
+  } | null> {
+    try {
+      const result = await this.request<{
+        call_id: string;
+        access_token: string;
+        agent_id: string;
+        call_status: string;
+        call_type: string;
+      }>(apiKey, '/v2/create-web-call', {
+        method: 'POST',
+        body: JSON.stringify({
+          agent_id: agentId,
+          metadata: metadata || {},
+        }),
+      });
+
+      console.log(`[Retell] Created web call: ${result.call_id}`);
+
+      return {
+        callId: result.call_id,
+        accessToken: result.access_token,
+        agentId: result.agent_id,
+        callStatus: result.call_status,
+      };
+    } catch (error) {
+      console.error('[Retell] Error creating web call:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get call details including transcript after call ends
+   * @see https://docs.retellai.com/api-references/get-call
+   */
+  async getCall(
+    apiKey: string,
+    callId: string
+  ): Promise<{
+    callId: string;
+    callStatus: string;
+    transcript?: string;
+    transcriptObject?: Array<{
+      role: 'agent' | 'user';
+      content: string;
+      words?: Array<{ word: string; start: number; end: number }>;
+    }>;
+    recordingUrl?: string;
+    durationMs?: number;
+    disconnectionReason?: string;
+  } | null> {
+    try {
+      const result = await this.request<{
+        call_id: string;
+        call_status: string;
+        transcript?: string;
+        transcript_object?: Array<{
+          role: 'agent' | 'user';
+          content: string;
+          words?: Array<{ word: string; start: number; end: number }>;
+        }>;
+        recording_url?: string;
+        duration_ms?: number;
+        disconnection_reason?: string;
+      }>(apiKey, `/v2/get-call/${callId}`);
+
+      return {
+        callId: result.call_id,
+        callStatus: result.call_status,
+        transcript: result.transcript,
+        transcriptObject: result.transcript_object,
+        recordingUrl: result.recording_url,
+        durationMs: result.duration_ms,
+        disconnectionReason: result.disconnection_reason,
+      };
+    } catch (error) {
+      console.error('[Retell] Error getting call:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get the WebSocket URL for audio streaming
+   */
+  getWebSocketUrl(callId: string, enableUpdate: boolean = true): string {
+    return `wss://api.retellai.com/audio-websocket/${callId}?enable_update=${enableUpdate}`;
   }
 }
 

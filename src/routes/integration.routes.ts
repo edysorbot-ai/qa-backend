@@ -33,4 +33,7 @@ router.get('/:id/agents/:agentId', integrationController.getAgent.bind(integrati
 // POST /api/integrations/:id/agents/:agentId/analyze - Analyze agent and generate test cases
 router.post('/:id/agents/:agentId/analyze', integrationController.analyzeAgent.bind(integrationController));
 
+// GET /api/integrations/:id/limits - Get provider limits (concurrency, etc.)
+router.get('/:id/limits', integrationController.getLimits.bind(integrationController));
+
 export default router;

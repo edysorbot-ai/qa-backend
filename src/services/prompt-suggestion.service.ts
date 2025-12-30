@@ -43,15 +43,15 @@ ${params.actualResponse}
 ${params.agentTranscript ? `FULL CONVERSATION:\n${params.agentTranscript}` : ''}
 
 TASK:
-Analyze why the agent failed to meet expectations. Provide 2-3 specific prompt improvements that would fix this issue.
+Analyze why the agent failed to meet expectations. Provide exactly 1 specific, actionable prompt improvement that would fix this issue. Focus on the most impactful change.
 
-For each suggestion, provide:
+For the suggestion, provide:
 1. "issue": What specific problem caused the failure (be precise)
 2. "suggestion": The EXACT text to add to the system prompt (make it copy-pastable)
 3. "location": Which section of the prompt to add it (e.g., "System Instructions → Conversation Guidelines")
 4. "priority": "high", "medium", or "low"
 
-Respond in JSON format as an array of suggestions:
+Respond in JSON format as an array with exactly 1 suggestion:
 [
   {
     "issue": "Agent provided personal advice instead of redirecting to core purpose",
@@ -82,7 +82,7 @@ Be specific to THIS failure. Don't give generic advice.`;
       // Validate and return
       return suggestions.filter((s: any) => 
         s.issue && s.suggestion && s.location && s.priority
-      ).slice(0, 3); // Max 3 suggestions
+      ).slice(0, 1); // Only 1 suggestion per error
 
     } catch (error) {
       console.error('[PromptSuggestionService] Error generating suggestions:', error);

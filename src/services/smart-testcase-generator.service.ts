@@ -36,6 +36,9 @@ export interface SmartTestCase {
   requiresSeparateCall: boolean;
   estimatedTurns: number;
   testType: TestType;
+  isCallClosing: boolean; // Whether this test case may cause the agent to end the call
+  batchPosition: 'start' | 'middle' | 'end' | 'any'; // Preferred position in batch
+  semanticGroup?: string; // Semantic grouping for meaningful batching (e.g., "user_info_collection", "eligibility_flow")
 }
 
 export type TestType = 
@@ -50,7 +53,10 @@ export type TestType =
   | 'budget_validation'
   | 'eligibility_check'
   | 'context_retention'
-  | 'sentiment_handling';
+  | 'sentiment_handling'
+  | 'call_closing'      // Test cases that trigger call end
+  | 'call_transfer'     // Test cases that trigger call transfer
+  | 'goodbye_handling'; // Test cases about ending conversation
 
 export interface CallBatch {
   id: string;
@@ -60,6 +66,7 @@ export interface CallBatch {
   estimatedDuration: number; // in seconds
   primaryTopic: string;
   description: string;
+  semanticFlow?: string; // Description of the semantic flow this batch tests
 }
 
 export interface TestPlan {
@@ -378,22 +385,33 @@ Return a JSON object:
   ): Promise<SmartTestCase[]> {
     const systemPrompt = `You are an expert QA engineer. Generate test cases for a voice AI agent, organized by the provided key topics.
 
-IMPORTANT RULES:
-1. Each test case should be associated with ONE primary key topic
-2. Mark test cases that can be tested together in ONE call (canBatchWith)
-3. Mark test cases that MUST have their own separate call (requiresSeparateCall)
-4. Estimate the number of conversation turns needed (estimatedTurns)
+CRITICAL RULES FOR CALL-CLOSING SCENARIOS:
+1. IDENTIFY ALL scenarios in the prompt that could END the call:
+   - Explicit goodbye/end call commands
+   - Disqualification scenarios (not eligible, wrong country, insufficient budget)
+   - Transfer to human scenarios
+   - "I'm not interested" scenarios
+   - Maximum retry/failure scenarios
+2. Mark these with "isCallClosing": true
+3. These MUST be placed at the END of any batch (batchPosition: "end")
+4. Call-closing test cases should ideally be in their own batch or at the very end
 
-Test cases that CAN be batched together:
-- Multiple questions about the same topic
-- Related follow-up scenarios
-- Variations of similar queries
+SEMANTIC GROUPING (semanticGroup field):
+Group test cases that form a logical conversation flow:
+- "user_info_collection": Getting user details (name, email, phone)
+- "eligibility_flow": Checking qualifications, requirements
+- "budget_validation": Discussing costs, budget constraints
+- "preference_exploration": Understanding user preferences
+- "recommendation_flow": Agent providing recommendations
+- "objection_handling": Handling user concerns/objections
+- "call_closing": Ending the conversation scenarios
+- "error_recovery": Handling errors, unclear inputs
 
-Test cases that REQUIRE separate calls:
-- Completely different user personas
-- Conflicting scenarios (e.g., high budget vs low budget)
-- Tests that need a fresh conversation context
-- Topic change tests (where user changes subject)
+BATCH POSITION RULES:
+- "start": Should be at beginning (greetings, initial questions)
+- "middle": Can go anywhere in conversation
+- "end": Should be at end (call-closing, goodbye scenarios)
+- "any": Flexible positioning
 
 Return JSON:
 {
@@ -410,10 +428,15 @@ Return JSON:
       "canBatchWith": ["other_test_case_names that can be in same call"],
       "requiresSeparateCall": true/false,
       "estimatedTurns": 3,
-      "testType": "happy_path|edge_case|error_handling|boundary|multi_turn|topic_change|interruption|fallback|budget_validation|eligibility_check|context_retention|sentiment_handling"
+      "testType": "happy_path|edge_case|error_handling|boundary|multi_turn|topic_change|interruption|fallback|budget_validation|eligibility_check|context_retention|sentiment_handling|call_closing|call_transfer|goodbye_handling",
+      "isCallClosing": false,
+      "batchPosition": "start|middle|end|any",
+      "semanticGroup": "user_info_collection|eligibility_flow|budget_validation|preference_exploration|recommendation_flow|objection_handling|call_closing|error_recovery"
     }
   ]
-}`;
+}
+
+CRITICAL: Carefully analyze the agent prompt for ALL scenarios that end the call (goodbye, not interested, not eligible, transfer, etc.) and mark them as isCallClosing=true with batchPosition="end".`;
 
     const topicsContext = keyTopics.map(t => 
       `- ${t.id}: ${t.name} (${t.importance}) - ${t.description}\n  Testable: ${t.testableAspects.join(', ')}`
@@ -462,25 +485,91 @@ Generate comprehensive test cases covering ALL key topics with MULTIPLE scenario
 
       const result = JSON.parse(response.choices[0].message.content || '{"testCases": []}');
       
-      return (result.testCases || []).map((tc: any, index: number) => ({
-        id: `tc-${Date.now()}-${index}`,
-        name: tc.name || `Test Case ${index + 1}`,
-        scenario: tc.scenario || '',
-        userInput: tc.userInput || tc.scenario || '',
-        expectedOutcome: tc.expectedOutcome || '',
-        category: tc.category || 'General',
-        keyTopicId: tc.keyTopicId || 'general',
-        keyTopicName: tc.keyTopicName || 'General',
-        priority: tc.priority || 'medium',
-        canBatchWith: tc.canBatchWith || [],
-        requiresSeparateCall: tc.requiresSeparateCall || false,
-        estimatedTurns: tc.estimatedTurns || 4,
-        testType: tc.testType || 'happy_path',
-      }));
+      // Map and detect call-closing scenarios
+      const testCases = (result.testCases || []).map((tc: any, index: number) => {
+        // Auto-detect call-closing scenarios from name/scenario if not explicitly marked
+        const isCallClosing = tc.isCallClosing || this.detectCallClosingScenario(tc);
+        const batchPosition = tc.batchPosition || (isCallClosing ? 'end' : 'any');
+        
+        return {
+          id: `tc-${Date.now()}-${index}`,
+          name: tc.name || `Test Case ${index + 1}`,
+          scenario: tc.scenario || '',
+          userInput: tc.userInput || tc.scenario || '',
+          expectedOutcome: tc.expectedOutcome || '',
+          category: tc.category || 'General',
+          keyTopicId: tc.keyTopicId || 'general',
+          keyTopicName: tc.keyTopicName || 'General',
+          priority: tc.priority || 'medium',
+          canBatchWith: tc.canBatchWith || [],
+          requiresSeparateCall: tc.requiresSeparateCall || false,
+          estimatedTurns: tc.estimatedTurns || 4,
+          testType: tc.testType || 'happy_path',
+          isCallClosing,
+          batchPosition,
+          semanticGroup: tc.semanticGroup || this.inferSemanticGroup(tc),
+        };
+      });
+      
+      return testCases;
     } catch (error) {
       console.error('[SmartTestCaseGenerator] Error generating test cases:', error);
       return [];
     }
+  }
+
+  /**
+   * Detect if a test case is a call-closing scenario based on keywords
+   */
+  private detectCallClosingScenario(tc: any): boolean {
+    const text = `${tc.name || ''} ${tc.scenario || ''} ${tc.expectedOutcome || ''} ${tc.userInput || ''}`.toLowerCase();
+    
+    const callClosingKeywords = [
+      'goodbye', 'bye', 'end call', 'hang up', 'disconnect',
+      'not interested', 'not eligible', 'ineligible', 'disqualified',
+      'wrong country', 'not available', 'cannot help',
+      'transfer to human', 'transfer call', 'speak to human', 'live agent',
+      'close call', 'terminate', 'end conversation',
+      'thank you goodbye', 'have a nice day',
+      'insufficient budget', 'budget too low', 'cannot afford',
+      'maximum attempts', 'too many retries', 'giving up'
+    ];
+    
+    return callClosingKeywords.some(keyword => text.includes(keyword));
+  }
+
+  /**
+   * Infer semantic group based on test case content
+   */
+  private inferSemanticGroup(tc: any): string {
+    const text = `${tc.name || ''} ${tc.scenario || ''} ${tc.category || ''}`.toLowerCase();
+    
+    if (text.includes('email') || text.includes('name') || text.includes('phone') || text.includes('contact')) {
+      return 'user_info_collection';
+    }
+    if (text.includes('eligible') || text.includes('qualify') || text.includes('requirement') || text.includes('criteria')) {
+      return 'eligibility_flow';
+    }
+    if (text.includes('budget') || text.includes('cost') || text.includes('price') || text.includes('afford')) {
+      return 'budget_validation';
+    }
+    if (text.includes('prefer') || text.includes('interest') || text.includes('want') || text.includes('like')) {
+      return 'preference_exploration';
+    }
+    if (text.includes('recommend') || text.includes('suggest') || text.includes('option')) {
+      return 'recommendation_flow';
+    }
+    if (text.includes('concern') || text.includes('objection') || text.includes('worry') || text.includes('but')) {
+      return 'objection_handling';
+    }
+    if (text.includes('goodbye') || text.includes('end') || text.includes('close') || text.includes('transfer')) {
+      return 'call_closing';
+    }
+    if (text.includes('error') || text.includes('invalid') || text.includes('unclear') || text.includes('repeat')) {
+      return 'error_recovery';
+    }
+    
+    return 'general';
   }
 
   /**
@@ -505,36 +594,19 @@ Generate comprehensive test cases covering ALL key topics with MULTIPLE scenario
           estimatedDuration: tc.estimatedTurns * 10, // ~10 seconds per turn
           primaryTopic: tc.keyTopicName,
           description: `Dedicated call for: ${tc.name}`,
+          semanticFlow: tc.semanticGroup,
         });
         assigned.add(tc.id);
       });
     
-    // Group remaining test cases by topic
-    const topicGroups = new Map<string, SmartTestCase[]>();
-    testCases
-      .filter(tc => !assigned.has(tc.id))
-      .forEach(tc => {
-        const group = topicGroups.get(tc.keyTopicId) || [];
-        group.push(tc);
-        topicGroups.set(tc.keyTopicId, group);
-      });
+    // Use semantic batching instead of simple topic grouping
+    const remainingCases = testCases.filter(tc => !assigned.has(tc.id));
+    const semanticBatches = this.createSemanticBatches(remainingCases, keyTopics);
     
-    // Create batches from topic groups
-    topicGroups.forEach((cases, topicId) => {
-      const topic = keyTopics.find(t => t.id === topicId);
-      const batchableGroups = this.groupBatchableCases(cases);
-      
-      batchableGroups.forEach((group, idx) => {
-        const totalTurns = group.reduce((sum, tc) => sum + tc.estimatedTurns, 0);
-        batches.push({
-          id: `batch-${batches.length + 1}`,
-          name: `${topic?.name || topicId} - Batch ${idx + 1}`,
-          testCaseIds: group.map(tc => tc.id),
-          testCases: group,
-          estimatedDuration: Math.min(totalTurns * 8, 300), // Cap at 5 minutes
-          primaryTopic: topic?.name || topicId,
-          description: `Testing ${group.length} scenarios for ${topic?.name || topicId}`,
-        });
+    semanticBatches.forEach((batch, idx) => {
+      batches.push({
+        ...batch,
+        id: `batch-${batches.length + 1}`,
       });
     });
     
@@ -549,29 +621,131 @@ Generate comprehensive test cases covering ALL key topics with MULTIPLE scenario
   }
 
   /**
-   * Group test cases that can be tested together
+   * Create semantically meaningful batches
+   * Groups test cases that form a logical conversation flow
    */
-  private groupBatchableCases(cases: SmartTestCase[]): SmartTestCase[][] {
-    const groups: SmartTestCase[][] = [];
+  private createSemanticBatches(cases: SmartTestCase[], keyTopics: KeyTopic[]): CallBatch[] {
+    const batches: CallBatch[] = [];
     const maxTurnsPerCall = 30;
+    
+    // Define semantic flow order (logical conversation progression)
+    const semanticFlowOrder: string[] = [
+      'user_info_collection',   // First: Get user details
+      'preference_exploration', // Then: Understand preferences
+      'eligibility_flow',       // Then: Check eligibility
+      'budget_validation',      // Then: Validate budget
+      'recommendation_flow',    // Then: Provide recommendations
+      'objection_handling',     // Then: Handle objections
+      'error_recovery',         // Error handling scenarios
+      'general',                // General scenarios
+      'call_closing',           // ALWAYS LAST: Call-closing scenarios
+    ];
+    
+    // Group cases by semantic group
+    const semanticGroups = new Map<string, SmartTestCase[]>();
+    cases.forEach(tc => {
+      const group = tc.semanticGroup || 'general';
+      const existing = semanticGroups.get(group) || [];
+      existing.push(tc);
+      semanticGroups.set(group, existing);
+    });
+    
+    // Create batches that follow a logical flow
+    // Each batch should tell a "story" - a logical conversation progression
+    
+    // First, separate call-closing cases (they go at the end of batches)
+    const callClosingCases = cases.filter(tc => tc.isCallClosing);
+    const nonClosingCases = cases.filter(tc => !tc.isCallClosing);
+    
+    // Create meaningful batches from non-closing cases
+    const batchableGroups = this.groupBySemanticFlow(nonClosingCases, semanticFlowOrder, maxTurnsPerCall);
+    
+    batchableGroups.forEach((group, idx) => {
+      // For each batch, add one call-closing case at the end if available
+      const batchCases = [...group];
+      const closingCase = callClosingCases.shift();
+      if (closingCase) {
+        batchCases.push(closingCase);
+      }
+      
+      // Sort cases within batch by position
+      batchCases.sort((a, b) => {
+        const posOrder: Record<string, number> = { 'start': 0, 'any': 1, 'middle': 1, 'end': 2 };
+        return (posOrder[a.batchPosition] || 1) - (posOrder[b.batchPosition] || 1);
+      });
+      
+      const totalTurns = batchCases.reduce((sum, tc) => sum + tc.estimatedTurns, 0);
+      const primaryGroups = [...new Set(batchCases.map(tc => tc.semanticGroup))];
+      
+      batches.push({
+        id: `semantic-batch-${idx + 1}`,
+        name: this.generateBatchName(batchCases),
+        testCaseIds: batchCases.map(tc => tc.id),
+        testCases: batchCases,
+        estimatedDuration: Math.min(totalTurns * 8, 300),
+        primaryTopic: batchCases[0]?.keyTopicName || 'General',
+        description: this.generateBatchDescription(batchCases),
+        semanticFlow: primaryGroups.join(' → '),
+      });
+    });
+    
+    // Add remaining call-closing cases as separate batches if any left
+    callClosingCases.forEach(tc => {
+      batches.push({
+        id: `closing-batch-${batches.length + 1}`,
+        name: `Call Closing - ${tc.name}`,
+        testCaseIds: [tc.id],
+        testCases: [tc],
+        estimatedDuration: tc.estimatedTurns * 10,
+        primaryTopic: tc.keyTopicName,
+        description: `Call-closing scenario: ${tc.scenario?.substring(0, 100)}...`,
+        semanticFlow: 'call_closing',
+      });
+    });
+    
+    return batches;
+  }
+
+  /**
+   * Group cases by semantic flow, ensuring logical progression
+   */
+  private groupBySemanticFlow(
+    cases: SmartTestCase[],
+    flowOrder: string[],
+    maxTurns: number
+  ): SmartTestCase[][] {
+    const groups: SmartTestCase[][] = [];
+    
+    // Sort cases by semantic flow order
+    const sortedCases = [...cases].sort((a, b) => {
+      const aOrder = flowOrder.indexOf(a.semanticGroup || 'general');
+      const bOrder = flowOrder.indexOf(b.semanticGroup || 'general');
+      return (aOrder === -1 ? 999 : aOrder) - (bOrder === -1 ? 999 : bOrder);
+    });
     
     let currentGroup: SmartTestCase[] = [];
     let currentTurns = 0;
+    let lastSemanticGroup = '';
     
-    // Sort by estimated turns (shorter first)
-    const sorted = [...cases].sort((a, b) => a.estimatedTurns - b.estimatedTurns);
-    
-    for (const tc of sorted) {
-      if (currentTurns + tc.estimatedTurns <= maxTurnsPerCall) {
-        currentGroup.push(tc);
-        currentTurns += tc.estimatedTurns;
-      } else {
-        if (currentGroup.length > 0) {
-          groups.push(currentGroup);
-        }
-        currentGroup = [tc];
-        currentTurns = tc.estimatedTurns;
+    for (const tc of sortedCases) {
+      const tcGroup = tc.semanticGroup || 'general';
+      
+      // Start new batch if:
+      // 1. Would exceed max turns
+      // 2. Semantic group changes significantly (unless related)
+      const shouldStartNewBatch = 
+        currentTurns + tc.estimatedTurns > maxTurns ||
+        (lastSemanticGroup && !this.areSemanticGroupsRelated(lastSemanticGroup, tcGroup) && currentGroup.length >= 3);
+      
+      if (shouldStartNewBatch && currentGroup.length > 0) {
+        groups.push(currentGroup);
+        currentGroup = [];
+        currentTurns = 0;
       }
+      
+      currentGroup.push(tc);
+      currentTurns += tc.estimatedTurns;
+      lastSemanticGroup = tcGroup;
     }
     
     if (currentGroup.length > 0) {
@@ -579,6 +753,89 @@ Generate comprehensive test cases covering ALL key topics with MULTIPLE scenario
     }
     
     return groups;
+  }
+
+  /**
+   * Check if two semantic groups are related and can be in same batch
+   */
+  private areSemanticGroupsRelated(group1: string, group2: string): boolean {
+    const relatedGroups: Record<string, string[]> = {
+      'user_info_collection': ['preference_exploration', 'eligibility_flow'],
+      'preference_exploration': ['user_info_collection', 'recommendation_flow'],
+      'eligibility_flow': ['user_info_collection', 'budget_validation'],
+      'budget_validation': ['eligibility_flow', 'recommendation_flow'],
+      'recommendation_flow': ['preference_exploration', 'budget_validation', 'objection_handling'],
+      'objection_handling': ['recommendation_flow', 'call_closing'],
+      'error_recovery': ['general'],
+      'general': ['error_recovery', 'preference_exploration'],
+      'call_closing': [], // Call closing should generally be separate
+    };
+    
+    return relatedGroups[group1]?.includes(group2) || 
+           relatedGroups[group2]?.includes(group1) ||
+           group1 === group2;
+  }
+
+  /**
+   * Generate a meaningful batch name based on test cases
+   */
+  private generateBatchName(cases: SmartTestCase[]): string {
+    const groups = [...new Set(cases.map(tc => tc.semanticGroup).filter((g): g is string => g !== undefined))];
+    const groupNames: Record<string, string> = {
+      'user_info_collection': 'User Info',
+      'preference_exploration': 'Preferences',
+      'eligibility_flow': 'Eligibility',
+      'budget_validation': 'Budget',
+      'recommendation_flow': 'Recommendations',
+      'objection_handling': 'Objections',
+      'error_recovery': 'Error Handling',
+      'call_closing': 'Call Close',
+      'general': 'General',
+    };
+    
+    const names = groups
+      .filter(g => g !== 'call_closing') // Don't include closing in main name
+      .map(g => groupNames[g] || g)
+      .slice(0, 3);
+    
+    const hasClosing = groups.includes('call_closing');
+    const baseName = names.join(' + ') || 'Mixed';
+    
+    return hasClosing ? `${baseName} → Close` : baseName;
+  }
+
+  /**
+   * Generate a meaningful batch description
+   */
+  private generateBatchDescription(cases: SmartTestCase[]): string {
+    const nonClosing = cases.filter(tc => !tc.isCallClosing);
+    const closing = cases.filter(tc => tc.isCallClosing);
+    
+    let desc = `Tests ${nonClosing.length} scenarios`;
+    
+    if (nonClosing.length > 0) {
+      const categories = [...new Set(nonClosing.map(tc => tc.category))];
+      desc += ` across ${categories.slice(0, 3).join(', ')}`;
+      if (categories.length > 3) desc += ` and ${categories.length - 3} more`;
+    }
+    
+    if (closing.length > 0) {
+      desc += `. Ends with: ${closing.map(tc => tc.name).join(', ')}`;
+    }
+    
+    return desc;
+  }
+
+  /**
+   * Group test cases that can be tested together (legacy method, kept for compatibility)
+   */
+  private groupBatchableCases(cases: SmartTestCase[]): SmartTestCase[][] {
+    // Use semantic batching instead
+    return this.groupBySemanticFlow(cases, [
+      'user_info_collection', 'preference_exploration', 'eligibility_flow',
+      'budget_validation', 'recommendation_flow', 'objection_handling',
+      'error_recovery', 'general', 'call_closing'
+    ], 30);
   }
 
   /**

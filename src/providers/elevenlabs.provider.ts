@@ -6,6 +6,7 @@
 import {
   VoiceProviderClient,
   ProviderValidationResult,
+  ProviderLimits,
   VoiceAgent,
   TTSRequest,
   TTSResponse,
@@ -13,12 +14,24 @@ import {
 
 const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io/v1';
 
+// ElevenLabs plan concurrency limits
+const ELEVENLABS_PLAN_LIMITS: Record<string, number> = {
+  'free': 1,
+  'starter': 2,
+  'creator': 3,
+  'pro': 5,
+  'scale': 10,
+  'business': 20,
+  'enterprise': 50,
+};
+
 interface ElevenLabsUser {
   subscription: {
     tier: string;
     character_count: number;
     character_limit: number;
     status: string;
+    max_concurrent_requests?: number; // If available from API
   };
   is_new_user: boolean;
   first_name?: string;
@@ -202,6 +215,104 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     }
   }
 
+  async getKnowledgeBase(apiKey: string, agentId: string): Promise<any[]> {
+    try {
+      // ElevenLabs knowledge base endpoint - list all documents
+      console.log(`[ElevenLabs] Fetching knowledge base for agent: ${agentId}`);
+      
+      // First, get the agent details to check for knowledge_base configuration
+      const agentResponse = await this.request<any>(
+        apiKey,
+        `/convai/agents/${agentId}`
+      );
+      
+      console.log('[ElevenLabs] Agent response keys:', Object.keys(agentResponse || {}));
+      
+      // Get knowledge base items directly from agent's prompt config
+      // This includes both files AND URLs
+      const agentKbItems: any[] = [];
+      const agentKbIds: string[] = [];
+      
+      // Check various locations for knowledge base references
+      if (agentResponse.knowledge_base) {
+        console.log('[ElevenLabs] Found knowledge_base in agent response:', agentResponse.knowledge_base);
+        if (Array.isArray(agentResponse.knowledge_base)) {
+          agentKbItems.push(...agentResponse.knowledge_base);
+          agentKbIds.push(...agentResponse.knowledge_base.map((kb: any) => kb.id || kb.document_id || kb));
+        }
+      }
+      
+      if (agentResponse.conversation_config?.agent?.prompt?.knowledge_base) {
+        const kb = agentResponse.conversation_config.agent.prompt.knowledge_base;
+        console.log('[ElevenLabs] Found knowledge_base in prompt config:', kb);
+        if (Array.isArray(kb)) {
+          // Store the full KB items from agent config (includes URLs)
+          agentKbItems.push(...kb);
+          agentKbIds.push(...kb.map((item: any) => item.id || item.document_id || item));
+        }
+      }
+      
+      // Now fetch all knowledge base documents to get metadata
+      const kbResponse = await this.request<{ documents: any[]; has_more: boolean }>(
+        apiKey,
+        `/convai/knowledge-base?page_size=100`
+      );
+      
+      console.log('[ElevenLabs] Knowledge base list response - total documents:', kbResponse.documents?.length || 0);
+      
+      // Create a map of document details from the full list
+      const docDetailsMap = new Map<string, any>();
+      if (kbResponse.documents && Array.isArray(kbResponse.documents)) {
+        for (const doc of kbResponse.documents) {
+          docDetailsMap.set(doc.id, doc);
+        }
+      }
+      
+      // Build the final list using agent's KB items as the source of truth
+      // This ensures we include both files AND URLs
+      const result: any[] = [];
+      const seenIds = new Set<string>();
+      
+      for (const item of agentKbItems) {
+        const itemId = item.id || item.document_id;
+        if (!itemId || seenIds.has(itemId)) continue;
+        seenIds.add(itemId);
+        
+        // Get full details from the documents list if available
+        const fullDetails = docDetailsMap.get(itemId);
+        
+        if (fullDetails) {
+          // File document with full metadata
+          result.push({
+            ...fullDetails,
+            name: fullDetails.name || fullDetails.file_name || item.name || 'Unknown Document',
+            type: fullDetails.type || item.type || 'file',
+            metadata: fullDetails.metadata || {},
+          });
+        } else {
+          // URL or item not in documents list - use agent config data
+          result.push({
+            id: itemId,
+            name: item.name || 'Unknown',
+            type: item.type || 'url',
+            url: item.url || (item.type === 'url' ? `https://elevenlabs.io/kb/${itemId}` : undefined),
+            usage_mode: item.usage_mode,
+            metadata: {
+              source: 'agent_config',
+            },
+          });
+        }
+      }
+      
+      console.log(`[ElevenLabs] Returning ${result.length} knowledge base items for agent ${agentId}`);
+      
+      return result;
+    } catch (error: any) {
+      console.error('[ElevenLabs] Error getting knowledge base:', error?.message || error);
+      return [];
+    }
+  }
+
   async listVoices(apiKey: string): Promise<ElevenLabsVoice[]> {
     try {
       const response = await this.request<{ voices: ElevenLabsVoice[] }>(
@@ -249,6 +360,61 @@ export class ElevenLabsProvider implements VoiceProviderClient {
       audioBuffer: Buffer.from(arrayBuffer),
       contentType: 'audio/mpeg',
     };
+  }
+
+  async getKnowledgeBaseDocumentContent(apiKey: string, documentId: string): Promise<string> {
+    try {
+      console.log(`[ElevenLabs] Fetching document content for: ${documentId}`);
+      
+      const response = await fetch(
+        `${ELEVENLABS_BASE_URL}/convai/knowledge-base/${documentId}/content`,
+        {
+          headers: {
+            'xi-api-key': apiKey,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`ElevenLabs API error (${response.status}): ${error}`);
+      }
+
+      const content = await response.text();
+      console.log(`[ElevenLabs] Document content fetched, length: ${content.length}`);
+      return content;
+    } catch (error: any) {
+      console.error('[ElevenLabs] Error getting document content:', error?.message || error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get provider limits including concurrency
+   */
+  async getLimits(apiKey: string): Promise<ProviderLimits> {
+    try {
+      const user = await this.request<ElevenLabsUser>(apiKey, '/user');
+      const tier = user.subscription.tier?.toLowerCase() || 'free';
+      
+      // Get concurrency limit from API if available, otherwise from plan
+      const concurrencyLimit = user.subscription.max_concurrent_requests || 
+                               ELEVENLABS_PLAN_LIMITS[tier] || 
+                               ELEVENLABS_PLAN_LIMITS['free'];
+      
+      return {
+        concurrencyLimit,
+        characterLimit: user.subscription.character_limit,
+        source: user.subscription.max_concurrent_requests ? 'api' : 'plan',
+      };
+    } catch (error) {
+      console.error('[ElevenLabs] Error getting limits:', error);
+      // Return conservative default
+      return {
+        concurrencyLimit: 2,
+        source: 'default',
+      };
+    }
   }
 }
 

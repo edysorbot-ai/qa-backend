@@ -1279,10 +1279,27 @@ router.post('/start-batched', async (req: Request, res: Response) => {
     });
 
     // Execute batches asynchronously
+    // First, try to fetch phone number from agent config
+    let phoneNumber: string | undefined;
+    if (resolvedInternalAgentId) {
+      try {
+        const agentResult = await pool.query(
+          'SELECT config FROM agents WHERE id = $1',
+          [resolvedInternalAgentId]
+        );
+        if (agentResult.rows.length > 0 && agentResult.rows[0].config) {
+          const config = agentResult.rows[0].config;
+          phoneNumber = config.phoneNumber || config.phone_number || config.phone;
+        }
+      } catch (e) {
+        console.log('[BatchedExecution] Could not fetch agent phone number:', e);
+      }
+    }
+
     executeBatchedCalls(
       testRunId,
       batches,
-      { provider: resolvedProvider, agentId, apiKey },
+      { provider: resolvedProvider, agentId, apiKey, phoneNumber },
       enableBatching,
       enableConcurrency,
       concurrencyCount
@@ -1311,7 +1328,7 @@ router.post('/start-batched', async (req: Request, res: Response) => {
 async function executeBatchedCalls(
   testRunId: string,
   batches: Array<{ id: string; name: string; testCases: Array<{ id: string; name: string; scenario: string; expectedOutcome: string; category: string }> }>,
-  agentConfig: { provider: string; agentId: string; apiKey: string },
+  agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
   enableBatching: boolean,
   enableConcurrency: boolean = false,
   concurrencyCount: number = 1
@@ -1356,6 +1373,8 @@ async function executeBatchedCalls(
             requiresSeparateCall: false,
             estimatedTurns: 4,
             testType: 'happy_path' as const,
+            isCallClosing: false,
+            batchPosition: 'any' as const,
           })),
           estimatedDuration: batch.testCases.length * 25,
           primaryTopic: batch.name,
@@ -1366,6 +1385,15 @@ async function executeBatchedCalls(
       );
       
       const { results, transcript, totalTurns, durationMs, audioBuffer } = executionResult;
+      
+      console.log(`[BatchedExecution] Batch ${batch.id} execution result:`);
+      console.log(`[BatchedExecution]   - Results count: ${results.length}`);
+      console.log(`[BatchedExecution]   - Transcript length: ${transcript.length}`);
+      console.log(`[BatchedExecution]   - Total turns: ${totalTurns}`);
+      console.log(`[BatchedExecution]   - Duration: ${durationMs}ms`);
+      if (transcript.length > 0) {
+        console.log(`[BatchedExecution]   - First turn: ${JSON.stringify(transcript[0])}`);
+      }
       
       // Save audio recording if available
       let audioUrl: string | null = null;

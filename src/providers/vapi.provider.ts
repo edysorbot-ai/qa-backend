@@ -6,6 +6,7 @@
 import {
   VoiceProviderClient,
   ProviderValidationResult,
+  ProviderLimits,
   VoiceAgent,
 } from './provider.interface';
 
@@ -138,26 +139,40 @@ export class VAPIProvider implements VoiceProviderClient {
     try {
       const assistants = await this.request<VAPIAssistant[]>(apiKey, '/assistant');
 
-      return assistants.map((assistant) => ({
-        id: assistant.id,
-        name: assistant.name,
-        provider: 'vapi',
-        description: assistant.model?.systemPrompt?.substring(0, 200),
-        voice: assistant.voice?.voiceId,
-        language: assistant.transcriber?.language,
-        metadata: {
-          modelProvider: assistant.model?.provider,
-          modelName: assistant.model?.model,
-          voiceProvider: assistant.voice?.provider,
-          firstMessage: assistant.firstMessage,
-          maxDurationSeconds: assistant.maxDurationSeconds,
-          silenceTimeoutSeconds: assistant.silenceTimeoutSeconds,
-          backchannelingEnabled: assistant.backchannelingEnabled,
-          transcriber: assistant.transcriber,
-          createdAt: assistant.createdAt,
-          updatedAt: assistant.updatedAt,
-        },
-      }));
+      // Debug: Log sample of the first assistant to see structure
+      if (assistants.length > 0) {
+        console.log('VAPI listAgents - Sample assistant:', JSON.stringify(assistants[0], null, 2));
+      }
+
+      return assistants.map((assistant) => {
+        // Extract system prompt - check multiple possible locations
+        const systemPrompt = assistant.model?.systemPrompt || 
+                            (assistant.model?.messages?.find((m: any) => m.role === 'system')?.content) ||
+                            '';
+        
+        return {
+          id: assistant.id,
+          name: assistant.name,
+          provider: 'vapi',
+          description: systemPrompt?.substring(0, 200),
+          voice: assistant.voice?.voiceId,
+          language: assistant.transcriber?.language,
+          metadata: {
+            modelProvider: assistant.model?.provider,
+            modelName: assistant.model?.model,
+            voiceProvider: assistant.voice?.provider,
+            firstMessage: assistant.firstMessage,
+            maxDurationSeconds: assistant.maxDurationSeconds,
+            silenceTimeoutSeconds: assistant.silenceTimeoutSeconds,
+            backchannelingEnabled: assistant.backchannelingEnabled,
+            transcriber: assistant.transcriber,
+            createdAt: assistant.createdAt,
+            updatedAt: assistant.updatedAt,
+            // Store prompt in metadata for redundancy
+            prompt: systemPrompt,
+          },
+        };
+      });
     } catch (error) {
       console.error('Error listing VAPI assistants:', error);
       return [];
@@ -171,11 +186,23 @@ export class VAPIProvider implements VoiceProviderClient {
         `/assistant/${agentId}`
       );
 
+      // Debug: Log the raw assistant data to see the actual structure
+      console.log('VAPI getAgent - Raw assistant response:', JSON.stringify(assistant, null, 2));
+      console.log('VAPI getAgent - assistant.model:', assistant.model);
+      console.log('VAPI getAgent - assistant.model?.systemPrompt:', assistant.model?.systemPrompt);
+
+      // Extract system prompt - check multiple possible locations
+      const systemPrompt = assistant.model?.systemPrompt || 
+                          (assistant.model?.messages?.find((m: any) => m.role === 'system')?.content) ||
+                          '';
+
+      console.log('VAPI getAgent - Extracted systemPrompt:', systemPrompt ? `Found (${systemPrompt.length} chars)` : 'NOT FOUND');
+
       return {
         id: assistant.id,
         name: assistant.name,
         provider: 'vapi',
-        description: assistant.model?.systemPrompt,
+        description: systemPrompt,
         voice: assistant.voice?.voiceId,
         language: assistant.transcriber?.language,
         metadata: {
@@ -199,6 +226,9 @@ export class VAPIProvider implements VoiceProviderClient {
           endCallMessage: assistant.endCallMessage,
           createdAt: assistant.createdAt,
           updatedAt: assistant.updatedAt,
+          // Also store prompt in metadata for redundancy
+          prompt: systemPrompt,
+          systemPrompt: systemPrompt,
         },
       };
     } catch (error) {
@@ -222,6 +252,196 @@ export class VAPIProvider implements VoiceProviderClient {
     } catch (error) {
       console.error('Error listing VAPI calls:', error);
       return [];
+    }
+  }
+
+  /**
+   * Get provider limits including concurrency
+   * VAPI has organization-level concurrency limits
+   */
+  async getLimits(apiKey: string): Promise<ProviderLimits> {
+    try {
+      // Try to get org info which contains concurrencyLimit
+      const orgInfo = await this.request<VAPIOrg>(apiKey, '/org');
+      
+      return {
+        concurrencyLimit: orgInfo.concurrencyLimit || 10,
+        source: orgInfo.concurrencyLimit ? 'api' : 'default',
+      };
+    } catch (error) {
+      console.error('[VAPI] Error getting limits:', error);
+      // VAPI default is typically 10 concurrent calls
+      return {
+        concurrencyLimit: 10,
+        source: 'default',
+      };
+    }
+  }
+
+  /**
+   * Send a text chat message to VAPI assistant using the Chat API
+   * This is VAPI's in-house text-based testing feature
+   * @see https://docs.vapi.ai/api-reference/chats/create
+   */
+  async chat(
+    apiKey: string,
+    assistantId: string,
+    input: string,
+    options: {
+      sessionId?: string;
+      previousChatId?: string;
+    } = {}
+  ): Promise<{
+    id: string;
+    output: Array<{ role: string; message: string }>;
+    messages: Array<{ role: string; message: string }>;
+    sessionId?: string;
+    rawResponse?: any;
+  } | null> {
+    try {
+      console.log(`[VAPI Chat] Sending message to assistant ${assistantId}: "${input.substring(0, 100)}..."`);
+      console.log(`[VAPI Chat] Options:`, JSON.stringify(options));
+
+      const requestBody = {
+        assistantId,
+        input,
+        ...(options.sessionId && { sessionId: options.sessionId }),
+        ...(options.previousChatId && { previousChatId: options.previousChatId }),
+      };
+      console.log(`[VAPI Chat] Request body:`, JSON.stringify(requestBody, null, 2));
+
+      const response = await this.request<any>(apiKey, '/chat', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      });
+
+      console.log(`[VAPI Chat] RAW Response received:`, JSON.stringify(response, null, 2));
+
+      // Extract output - VAPI might return in different formats
+      let outputMessages: Array<{ role: string; message: string }> = [];
+      
+      // Check for output array
+      if (response.output && Array.isArray(response.output)) {
+        outputMessages = response.output.map((o: any) => ({
+          role: o.role || 'assistant',
+          message: o.message || o.content || '',
+        }));
+        console.log(`[VAPI Chat] Found output array with ${outputMessages.length} messages`);
+      }
+      
+      // Check for messages array (fallback)
+      if (outputMessages.length === 0 && response.messages && Array.isArray(response.messages)) {
+        // Filter for assistant messages only
+        outputMessages = response.messages
+          .filter((m: any) => m.role === 'assistant' || m.role === 'bot')
+          .map((m: any) => ({
+            role: 'assistant',
+            message: m.message || m.content || '',
+          }));
+        console.log(`[VAPI Chat] Found messages array with ${outputMessages.length} assistant messages`);
+      }
+
+      // Check for direct response text
+      if (outputMessages.length === 0 && response.response) {
+        outputMessages = [{
+          role: 'assistant',
+          message: typeof response.response === 'string' ? response.response : JSON.stringify(response.response),
+        }];
+        console.log(`[VAPI Chat] Found direct response field`);
+      }
+
+      // Check for text field
+      if (outputMessages.length === 0 && response.text) {
+        outputMessages = [{
+          role: 'assistant',
+          message: response.text,
+        }];
+        console.log(`[VAPI Chat] Found text field`);
+      }
+
+      console.log(`[VAPI Chat] Extracted ${outputMessages.length} output messages:`, outputMessages);
+
+      return {
+        id: response.id || 'unknown',
+        output: outputMessages,
+        messages: response.messages || [],
+        sessionId: response.sessionId,
+        rawResponse: response,
+      };
+    } catch (error) {
+      console.error('[VAPI Chat] Error sending chat message:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Run a multi-turn chat conversation with VAPI assistant
+   * Uses the Chat API for text-based testing
+   */
+  async runChatConversation(
+    apiKey: string,
+    assistantId: string,
+    userMessages: string[]
+  ): Promise<{
+    success: boolean;
+    transcript: Array<{ role: string; content: string; timestamp: number }>;
+    error?: string;
+  }> {
+    const transcript: Array<{ role: string; content: string; timestamp: number }> = [];
+    let previousChatId: string | undefined;
+    let sessionId: string | undefined;
+
+    try {
+      for (const userMessage of userMessages) {
+        // Add user message to transcript
+        transcript.push({
+          role: 'test_caller',
+          content: userMessage,
+          timestamp: Date.now(),
+        });
+
+        // Send to VAPI Chat API
+        const response = await this.chat(apiKey, assistantId, userMessage, {
+          sessionId,
+          previousChatId,
+        });
+
+        if (!response) {
+          return {
+            success: false,
+            transcript,
+            error: 'Failed to get response from VAPI Chat API',
+          };
+        }
+
+        // Track session for conversation continuity
+        previousChatId = response.id;
+        if (response.sessionId) {
+          sessionId = response.sessionId;
+        }
+
+        // Add assistant responses to transcript
+        for (const output of response.output) {
+          if (output.message) {
+            transcript.push({
+              role: 'ai_agent',
+              content: output.message,
+              timestamp: Date.now(),
+            });
+          }
+        }
+
+        // Small delay between messages
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      return { success: true, transcript };
+    } catch (error) {
+      return {
+        success: false,
+        transcript,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
     }
   }
 }

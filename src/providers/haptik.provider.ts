@@ -8,10 +8,12 @@
 import {
   VoiceProviderClient,
   ProviderValidationResult,
+  ProviderLimits,
   VoiceAgent,
 } from './provider.interface';
 
 const HAPTIK_BASE_URL = 'https://api.haptik.ai';
+const HAPTIK_DEFAULT_CONCURRENCY = 5;
 
 interface HaptikBot {
   bot_id: string;
@@ -414,6 +416,27 @@ export class HaptikProvider implements VoiceProviderClient {
     } catch (error) {
       console.error('Error getting Haptik call transcript:', error);
       return null;
+    }
+  }
+
+  /**
+   * Get provider limits including concurrency
+   */
+  async getLimits(apiKey: string): Promise<ProviderLimits> {
+    try {
+      // Try to get business info which may contain limits
+      const businessInfo = await this.request<HaptikBusinessInfo>(apiKey, '/v1/business/info');
+      
+      return {
+        concurrencyLimit: HAPTIK_DEFAULT_CONCURRENCY,
+        source: 'default',
+      };
+    } catch (error) {
+      console.error('[Haptik] Error getting limits:', error);
+      return {
+        concurrencyLimit: HAPTIK_DEFAULT_CONCURRENCY,
+        source: 'default',
+      };
     }
   }
 }

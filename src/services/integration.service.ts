@@ -194,6 +194,44 @@ export class IntegrationService {
   }
 
   /**
+   * Get provider limits (concurrency, rate limits, etc.)
+   */
+  async getProviderLimits(integrationId: string): Promise<{
+    concurrencyLimit: number;
+    source: string;
+    provider: string;
+  } | null> {
+    const integration = await this.findById(integrationId);
+    if (!integration || !integration.is_active) {
+      return null;
+    }
+
+    try {
+      const client = getProviderClient(integration.provider);
+      if (client.getLimits) {
+        const limits = await client.getLimits(integration.api_key);
+        return {
+          ...limits,
+          provider: integration.provider,
+        };
+      }
+      // Default limits if provider doesn't support getLimits
+      return {
+        concurrencyLimit: 5,
+        source: 'default',
+        provider: integration.provider,
+      };
+    } catch (error) {
+      console.error(`Error getting limits for ${integration.provider}:`, error);
+      return {
+        concurrencyLimit: 5,
+        source: 'default',
+        provider: integration.provider,
+      };
+    }
+  }
+
+  /**
    * Analyze agent and generate test cases using OpenAI
    * Uses SmartTestCaseGeneratorService for topic-based test case generation
    */

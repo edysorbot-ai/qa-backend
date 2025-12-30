@@ -59,4 +59,7 @@ router.delete('/:agentId/workflow/:workflowId', workflowController.deleteWorkflo
 // GET /api/agents/:agentId/workflow/execution-plan - Get execution plan
 router.get('/:agentId/workflow/execution-plan', workflowController.getExecutionPlan.bind(workflowController));
 
+// GET /api/agents/:id/knowledge-base/:documentId/content - Get knowledge base document content
+router.get('/:id/knowledge-base/:documentId/content', agentController.getKnowledgeBaseDocumentContent.bind(agentController));
+
 export default router;

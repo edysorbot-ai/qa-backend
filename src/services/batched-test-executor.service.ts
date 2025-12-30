@@ -16,6 +16,10 @@ import {
 import { TTSService } from './tts.service';
 import { promptSuggestionService } from './prompt-suggestion.service';
 import { PromptSuggestion } from '../models/testResult.model';
+import { vapiProvider } from '../providers/vapi.provider';
+import { retellProvider } from '../providers/retell.provider';
+import { haptikProvider } from '../providers/haptik.provider';
+import { twilioCallerService } from './twilio-caller.service';
 
 interface BatchTestResult {
   testCaseId: string;
@@ -91,6 +95,9 @@ export class BatchedTestExecutorService {
       audioChunks
     );
     
+    console.log(`[BatchedExecutor] After executeConversation: ${transcript.length} turns, provider: ${agentConfig.provider}`);
+    console.log(`[BatchedExecutor] Transcript preview:`, transcript.slice(0, 3).map(t => ({ role: t.role, content: t.content.substring(0, 50) })));
+    
     // Analyze the conversation against each test case
     const results = await this.analyzeTranscriptForTestCases(
       transcript,
@@ -115,13 +122,125 @@ export class BatchedTestExecutorService {
 
   /**
    * Execute a multi-test-case conversation
+   * Routes to provider-specific implementations for voice-based testing
    */
   private async executeConversation(
     batch: CallBatch,
-    agentConfig: { provider: string; agentId: string; apiKey: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
     transcript: ConversationTurn[],
     audioChunks: Buffer[],
     userAudioChunks: Buffer[] = [] // Track user audio separately
+  ): Promise<{ success: boolean; error?: string }> {
+    console.log(`[BatchedExecutor] Routing conversation for provider: ${agentConfig.provider}`);
+    
+    // Route to provider-specific voice testing implementations
+    switch (agentConfig.provider.toLowerCase()) {
+      case 'vapi':
+        // VAPI: Use Twilio phone call for real voice testing (1st preference)
+        // Falls back to Chat API if Twilio not configured or no phone number
+        if (twilioCallerService.isConfigured() && agentConfig.phoneNumber) {
+          return this.executeTwilioPhoneCall(batch, agentConfig, transcript, audioChunks);
+        }
+        console.log(`[BatchedExecutor] VAPI: Twilio not configured or no phone number, falling back to Chat API`);
+        return this.executeVAPIChatAPI(batch, agentConfig, transcript);
+      
+      case 'haptik':
+        // Haptik: Use Twilio phone call for real voice testing (1st preference)
+        // Falls back to Message API if Twilio not configured or no phone number
+        if (twilioCallerService.isConfigured() && agentConfig.phoneNumber) {
+          return this.executeTwilioPhoneCall(batch, agentConfig, transcript, audioChunks);
+        }
+        console.log(`[BatchedExecutor] Haptik: Twilio not configured or no phone number, falling back to Message API`);
+        return this.executeHaptikMessageAPI(batch, agentConfig, transcript);
+      
+      case 'retell':
+        // Retell: Use Web Call API + WebSocket for voice-based testing
+        return this.executeRetellVoiceCall(batch, agentConfig, transcript, audioChunks);
+      
+      case 'elevenlabs':
+      default:
+        // ElevenLabs: Use native WebSocket (existing implementation)
+        return this.executeElevenLabsVoiceCall(batch, agentConfig, transcript, audioChunks);
+    }
+  }
+
+  /**
+   * Execute test using Twilio phone call
+   * Makes a real phone call to the agent's phone number
+   * Used for VAPI and Haptik testing
+   */
+  private async executeTwilioPhoneCall(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
+    transcript: ConversationTurn[],
+    audioChunks: Buffer[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Starting Twilio phone call for ${agentConfig.provider}`);
+      console.log(`[BatchedExecutor] Calling phone number: ${agentConfig.phoneNumber}`);
+
+      if (!agentConfig.phoneNumber) {
+        return { success: false, error: 'No phone number configured for agent' };
+      }
+
+      // Build test caller system prompt
+      const systemPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      
+      // Convert test cases to scenarios format
+      const scenarios = batch.testCases.map(tc => ({
+        id: tc.id,
+        name: tc.name,
+        scenario: tc.scenario,
+        userInput: tc.userInput,
+      }));
+
+      // Make the phone call
+      const result = await twilioCallerService.makeTestCall(
+        agentConfig.phoneNumber,
+        scenarios,
+        systemPrompt
+      );
+
+      if (!result.success) {
+        console.error(`[BatchedExecutor] Twilio call failed: ${result.error}`);
+        return { success: false, error: result.error };
+      }
+
+      console.log(`[BatchedExecutor] Twilio call completed: ${result.callSid}`);
+      console.log(`[BatchedExecutor] Call duration: ${result.durationMs}ms`);
+
+      // Convert Twilio transcript to our format
+      for (const turn of result.transcript) {
+        transcript.push({
+          role: turn.role,
+          content: turn.content,
+          timestamp: turn.timestamp,
+        });
+      }
+
+      // If we got a recording, we could download it and add to audioChunks
+      if (result.recordingUrl) {
+        console.log(`[BatchedExecutor] Recording available: ${result.recordingUrl}`);
+      }
+
+      console.log(`[BatchedExecutor] Twilio call completed with ${transcript.length} turns`);
+      return { success: true };
+
+    } catch (error) {
+      console.error(`[BatchedExecutor] Twilio phone call error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Execute ElevenLabs voice call using native WebSocket
+   * This is the original implementation - voice-based testing
+   */
+  private async executeElevenLabsVoiceCall(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[],
+    audioChunks: Buffer[]
   ): Promise<{ success: boolean; error?: string }> {
     return new Promise(async (resolve) => {
       const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
@@ -386,6 +505,969 @@ export class BatchedTestExecutorService {
         resolve({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
       }
     });
+  }
+
+  /**
+   * Execute VAPI test using VAPI's native Chat API
+   * This is VAPI's in-house text-based testing feature
+   * @see https://docs.vapi.ai/api-reference/chats/create
+   */
+  private async executeVAPIChatAPI(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Starting VAPI Chat API test for batch: ${batch.name}`);
+      console.log(`[BatchedExecutor] Assistant ID: ${agentConfig.agentId}`);
+
+      // Step 1: Build test caller prompt to generate conversation
+      const testCallerPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      const testCallerHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: testCallerPrompt }
+      ];
+
+      // Step 2: Generate test caller messages based on test cases
+      const testedCases = new Set<string>();
+      let previousChatId: string | undefined;
+      let sessionId: string | undefined;
+      let turnCount = 0;
+      const maxTurns = Math.min(batch.testCases.length * 3 + 5, 30);
+
+      // Initial greeting from test caller
+      const initialGreeting = await this.generateBatchTestCallerResponse(
+        testCallerHistory,
+        batch.testCases,
+        0
+      );
+
+      if (initialGreeting.text) {
+        console.log(`[BatchedExecutor] Test caller greeting: ${initialGreeting.text.substring(0, 50)}...`);
+        
+        // Send to VAPI Chat API and get response
+        const chatResponse = await vapiProvider.chat(
+          agentConfig.apiKey,
+          agentConfig.agentId,
+          initialGreeting.text,
+          { sessionId, previousChatId }
+        );
+
+        if (!chatResponse) {
+          return { success: false, error: 'Failed to get initial response from VAPI Chat API' };
+        }
+
+        // Add user message to transcript
+        transcript.push({
+          role: 'test_caller',
+          content: initialGreeting.text,
+          timestamp: Date.now(),
+          testCaseId: initialGreeting.testCaseId,
+        });
+
+        // Track session for conversation continuity
+        previousChatId = chatResponse.id;
+        if (chatResponse.sessionId) {
+          sessionId = chatResponse.sessionId;
+        }
+
+        // Add assistant responses to transcript
+        console.log(`[BatchedExecutor] VAPI Chat API returned ${chatResponse.output.length} output messages`);
+        if (chatResponse.output.length === 0) {
+          console.log(`[BatchedExecutor] WARNING: No output messages from VAPI Chat API`);
+          console.log(`[BatchedExecutor] Raw response keys:`, chatResponse.rawResponse ? Object.keys(chatResponse.rawResponse) : 'none');
+        }
+        
+        for (const output of chatResponse.output) {
+          console.log(`[BatchedExecutor] Processing output:`, JSON.stringify(output));
+          if (output.message) {
+            transcript.push({
+              role: 'ai_agent',
+              content: output.message,
+              timestamp: Date.now(),
+            });
+            testCallerHistory.push({ role: 'user', content: output.message });
+            console.log(`[BatchedExecutor] Added AI_AGENT message: ${output.message.substring(0, 80)}...`);
+          }
+        }
+
+        if (initialGreeting.testCaseId) {
+          testedCases.add(initialGreeting.testCaseId);
+        }
+        testCallerHistory.push({ role: 'assistant', content: initialGreeting.text });
+        turnCount++;
+      }
+
+      // Step 3: Continue conversation until all test cases covered
+      while (turnCount < maxTurns && testedCases.size < batch.testCases.length) {
+        // Generate next test caller response
+        const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+        const testCallerResponse = await this.generateBatchTestCallerResponse(
+          testCallerHistory,
+          remainingCases,
+          testedCases.size
+        );
+
+        if (!testCallerResponse.text || this.isGoodbyeMessage(testCallerResponse.text)) {
+          console.log(`[BatchedExecutor] VAPI Chat: Test caller ending conversation`);
+          break;
+        }
+
+        console.log(`[BatchedExecutor] Test caller (turn ${turnCount}): ${testCallerResponse.text.substring(0, 80)}...`);
+
+        // Send to VAPI Chat API
+        const chatResponse = await vapiProvider.chat(
+          agentConfig.apiKey,
+          agentConfig.agentId,
+          testCallerResponse.text,
+          { sessionId, previousChatId }
+        );
+
+        if (!chatResponse) {
+          console.log(`[BatchedExecutor] VAPI Chat: No response from API, breaking...`);
+          break;
+        }
+
+        // Add user message to transcript
+        transcript.push({
+          role: 'test_caller',
+          content: testCallerResponse.text,
+          timestamp: Date.now(),
+          testCaseId: testCallerResponse.testCaseId,
+        });
+
+        // Update session tracking
+        previousChatId = chatResponse.id;
+        if (chatResponse.sessionId) {
+          sessionId = chatResponse.sessionId;
+        }
+
+        // Add assistant responses to transcript
+        console.log(`[BatchedExecutor] VAPI Chat returned ${chatResponse.output.length} output messages for turn ${turnCount}`);
+        if (chatResponse.output.length === 0) {
+          console.log(`[BatchedExecutor] WARNING: Empty output from VAPI for turn ${turnCount}`);
+        }
+        
+        for (const output of chatResponse.output) {
+          if (output.message) {
+            transcript.push({
+              role: 'ai_agent',
+              content: output.message,
+              timestamp: Date.now(),
+            });
+            testCallerHistory.push({ role: 'user', content: output.message });
+            console.log(`[BatchedExecutor] VAPI response (turn ${turnCount}): ${output.message.substring(0, 80)}...`);
+          }
+        }
+
+        if (testCallerResponse.testCaseId) {
+          testedCases.add(testCallerResponse.testCaseId);
+        }
+        testCallerHistory.push({ role: 'assistant', content: testCallerResponse.text });
+        turnCount++;
+
+        // Small delay between turns
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      console.log(`[BatchedExecutor] VAPI Chat API test completed: ${transcript.length} total turns, ${testedCases.size}/${batch.testCases.length} scenarios tested`);
+      console.log(`[BatchedExecutor] Final transcript roles:`, transcript.map(t => t.role));
+      return { success: true };
+
+    } catch (error) {
+      console.error(`[BatchedExecutor] VAPI Chat API error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Execute Retell voice call using Web Call API + WebSocket
+   * Voice-based testing using Retell's native infrastructure
+   * @see https://docs.retellai.com/api-references/create-web-call
+   */
+  private async executeRetellVoiceCall(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[],
+    audioChunks: Buffer[]
+  ): Promise<{ success: boolean; error?: string }> {
+    return new Promise(async (resolve) => {
+      const ttsService = new TTSService(this.elevenLabsApiKey || process.env.ELEVENLABS_API_KEY || '');
+      
+      try {
+        console.log(`[BatchedExecutor] Starting Retell voice call for batch: ${batch.name}`);
+        console.log(`[BatchedExecutor] Retell Agent ID: ${agentConfig.agentId}`);
+        
+        // Step 1: Create a web call to get access token
+        const webCall = await retellProvider.createWebCall(
+          agentConfig.apiKey,
+          agentConfig.agentId,
+          { testBatch: batch.name }
+        );
+        
+        if (!webCall) {
+          return resolve({ success: false, error: 'Failed to create Retell web call' });
+        }
+        
+        console.log(`[BatchedExecutor] Retell call created: ${webCall.callId}`);
+        
+        // Step 2: Build test caller prompt
+        const systemPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+        const conversationHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+          { role: 'system', content: systemPrompt }
+        ];
+        
+        let turnCount = 0;
+        const maxTurns = Math.min(batch.testCases.length * 4 + 10, 40);
+        let currentAgentResponse = '';
+        let conversationComplete = false;
+        let isProcessingResponse = false;
+        const testedCases = new Set<string>();
+        
+        // Step 3: Connect to Retell WebSocket
+        const wsUrl = retellProvider.getWebSocketUrl(webCall.callId, true);
+        console.log(`[BatchedExecutor] Connecting to Retell WebSocket: ${wsUrl}`);
+        
+        const ws = new WebSocket(wsUrl);
+        
+        const timeout = setTimeout(() => {
+          conversationComplete = true;
+          ws.close();
+        }, 300000); // 5 minute timeout
+        
+        let silenceTimer: NodeJS.Timeout | null = null;
+        
+        const processAgentTurn = async () => {
+          if (isProcessingResponse || !currentAgentResponse.trim() || conversationComplete) {
+            return;
+          }
+          isProcessingResponse = true;
+          
+          turnCount++;
+          const agentMessage = currentAgentResponse.trim();
+          console.log(`[BatchedExecutor] Retell Agent (turn ${turnCount}): ${agentMessage.substring(0, 150)}...`);
+          
+          transcript.push({
+            role: 'ai_agent',
+            content: agentMessage,
+            timestamp: Date.now(),
+          });
+          
+          conversationHistory.push({ role: 'user', content: agentMessage });
+          
+          // Check if we should end
+          const shouldEnd = this.shouldEndBatchConversation(agentMessage, turnCount, testedCases.size, batch.testCases.length);
+          
+          if (turnCount >= maxTurns || shouldEnd) {
+            conversationComplete = true;
+            const goodbye = "Thank you for all the information! Goodbye!";
+            transcript.push({ role: 'test_caller', content: goodbye, timestamp: Date.now() });
+            
+            try {
+              const ttsResult = await ttsService.generateSpeech({ text: goodbye });
+              await this.sendAudioToRetell(ws, ttsResult.audioBuffer);
+            } catch (e) {
+              console.error('[BatchedExecutor] Retell TTS error:', e);
+            }
+            
+            setTimeout(() => ws.close(), 3000);
+          } else {
+            // Generate response
+            const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+            const response = await this.generateBatchTestCallerResponse(
+              conversationHistory,
+              remainingCases,
+              testedCases.size
+            );
+            
+            if (response.testCaseId) {
+              testedCases.add(response.testCaseId);
+            }
+            
+            console.log(`[BatchedExecutor] Retell Test Caller (turn ${turnCount}): ${response.text}`);
+            
+            transcript.push({
+              role: 'test_caller',
+              content: response.text,
+              timestamp: Date.now(),
+              testCaseId: response.testCaseId,
+            });
+            
+            conversationHistory.push({ role: 'assistant', content: response.text });
+            
+            // Send audio to Retell
+            try {
+              const ttsResult = await ttsService.generateSpeech({ text: response.text });
+              audioChunks.push(ttsResult.audioBuffer);
+              await this.sendAudioToRetell(ws, ttsResult.audioBuffer);
+            } catch (e) {
+              console.error('[BatchedExecutor] Retell TTS error:', e);
+            }
+          }
+          
+          currentAgentResponse = '';
+          isProcessingResponse = false;
+        };
+        
+        ws.on('open', () => {
+          console.log(`[BatchedExecutor] Retell WebSocket connected`);
+          
+          // Send initial greeting after connection
+          setTimeout(async () => {
+            try {
+              const greeting = "Hello?";
+              const ttsResult = await ttsService.generateSpeech({ text: greeting });
+              await this.sendAudioToRetell(ws, ttsResult.audioBuffer);
+            } catch (e) {
+              console.error('[BatchedExecutor] Retell greeting error:', e);
+            }
+          }, 2000);
+        });
+        
+        ws.on('message', async (data: Buffer) => {
+          try {
+            const message = JSON.parse(data.toString());
+            
+            // Handle update events with transcript
+            if (message.event_type === 'update' && message.transcript) {
+              // Extract agent utterances from transcript
+              const agentUtterances = (message.transcript || [])
+                .filter((t: any) => t.role === 'agent')
+                .map((t: any) => t.content)
+                .join(' ');
+              
+              if (agentUtterances && agentUtterances !== currentAgentResponse) {
+                currentAgentResponse = agentUtterances;
+                
+                if (silenceTimer) clearTimeout(silenceTimer);
+                silenceTimer = setTimeout(() => {
+                  if (currentAgentResponse.trim()) {
+                    processAgentTurn();
+                  }
+                }, 1500);
+              }
+            }
+            
+            // Handle clear events (interruption)
+            if (data.toString() === 'clear') {
+              console.log(`[BatchedExecutor] Retell clear event received`);
+            }
+            
+          } catch (e) {
+            // Binary audio data
+            if (Buffer.isBuffer(data)) {
+              audioChunks.push(data);
+            }
+          }
+        });
+        
+        ws.on('close', async (code, reason) => {
+          clearTimeout(timeout);
+          if (silenceTimer) clearTimeout(silenceTimer);
+          console.log(`[BatchedExecutor] Retell WebSocket closed. Code: ${code}`);
+          
+          // Fetch final transcript from Retell API
+          try {
+            await new Promise(r => setTimeout(r, 2000)); // Wait for call to finalize
+            const callDetails = await retellProvider.getCall(agentConfig.apiKey, webCall.callId);
+            
+            if (callDetails?.transcriptObject && callDetails.transcriptObject.length > 0) {
+              console.log(`[BatchedExecutor] Got Retell transcript with ${callDetails.transcriptObject.length} utterances`);
+              
+              // If we didn't get messages via WebSocket, use the final transcript
+              if (transcript.length < 3) {
+                transcript.length = 0; // Clear existing
+                for (const turn of callDetails.transcriptObject) {
+                  transcript.push({
+                    role: turn.role === 'agent' ? 'ai_agent' : 'test_caller',
+                    content: turn.content,
+                    timestamp: Date.now(),
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.error('[BatchedExecutor] Error fetching Retell transcript:', e);
+          }
+          
+          console.log(`[BatchedExecutor] Retell final stats: ${transcript.length} messages`);
+          resolve({ success: true });
+        });
+        
+        ws.on('error', (error) => {
+          console.error('[BatchedExecutor] Retell WebSocket error:', error);
+          resolve({ success: false, error: error.message });
+        });
+        
+      } catch (error) {
+        console.error('[BatchedExecutor] Retell error:', error);
+        resolve({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+  }
+
+  /**
+   * Send audio to Retell WebSocket
+   * Retell expects raw PCM audio bytes
+   */
+  private async sendAudioToRetell(ws: WebSocket, audioBuffer: Buffer): Promise<void> {
+    const CHUNK_SIZE = 3200; // ~100ms at 16kHz
+    
+    for (let i = 0; i < audioBuffer.length; i += CHUNK_SIZE) {
+      if (ws.readyState !== WebSocket.OPEN) break;
+      
+      const chunk = audioBuffer.slice(i, Math.min(i + CHUNK_SIZE, audioBuffer.length));
+      ws.send(chunk);
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  /**
+   * Execute Haptik voice call using Voice Call API + WebSocket
+   * Voice-based testing using Haptik's native infrastructure
+   */
+  private async executeHaptikVoiceCall(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[],
+    audioChunks: Buffer[]
+  ): Promise<{ success: boolean; error?: string }> {
+    return new Promise(async (resolve) => {
+      const ttsService = new TTSService(this.elevenLabsApiKey || process.env.ELEVENLABS_API_KEY || '');
+      
+      try {
+        console.log(`[BatchedExecutor] Starting Haptik voice call for batch: ${batch.name}`);
+        console.log(`[BatchedExecutor] Haptik Bot ID: ${agentConfig.agentId}`);
+        
+        // Step 1: Initiate voice call to get WebSocket URL
+        const voiceCall = await haptikProvider.initiateVoiceCall(
+          agentConfig.apiKey,
+          agentConfig.agentId
+        );
+        
+        if (!voiceCall || !voiceCall.webSocketUrl) {
+          console.log(`[BatchedExecutor] Haptik voice call initiation failed, falling back to message API`);
+          // Fallback to text-based messaging
+          return resolve(await this.executeHaptikMessageAPI(batch, agentConfig, transcript));
+        }
+        
+        console.log(`[BatchedExecutor] Haptik call created: ${voiceCall.callId}`);
+        
+        // Step 2: Build test caller prompt
+        const systemPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+        const conversationHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+          { role: 'system', content: systemPrompt }
+        ];
+        
+        let turnCount = 0;
+        const maxTurns = Math.min(batch.testCases.length * 4 + 10, 40);
+        let currentAgentResponse = '';
+        let conversationComplete = false;
+        let isProcessingResponse = false;
+        const testedCases = new Set<string>();
+        
+        // Step 3: Connect to Haptik WebSocket
+        console.log(`[BatchedExecutor] Connecting to Haptik WebSocket: ${voiceCall.webSocketUrl}`);
+        
+        const ws = new WebSocket(voiceCall.webSocketUrl);
+        
+        const timeout = setTimeout(() => {
+          conversationComplete = true;
+          haptikProvider.endVoiceCall(agentConfig.apiKey, voiceCall.callId);
+          ws.close();
+        }, 300000); // 5 minute timeout
+        
+        let silenceTimer: NodeJS.Timeout | null = null;
+        
+        const processAgentTurn = async () => {
+          if (isProcessingResponse || !currentAgentResponse.trim() || conversationComplete) {
+            return;
+          }
+          isProcessingResponse = true;
+          
+          turnCount++;
+          const agentMessage = currentAgentResponse.trim();
+          console.log(`[BatchedExecutor] Haptik Agent (turn ${turnCount}): ${agentMessage.substring(0, 150)}...`);
+          
+          transcript.push({
+            role: 'ai_agent',
+            content: agentMessage,
+            timestamp: Date.now(),
+          });
+          
+          conversationHistory.push({ role: 'user', content: agentMessage });
+          
+          // Check if we should end
+          const shouldEnd = this.shouldEndBatchConversation(agentMessage, turnCount, testedCases.size, batch.testCases.length);
+          
+          if (turnCount >= maxTurns || shouldEnd) {
+            conversationComplete = true;
+            const goodbye = "Thank you for all the information! Goodbye!";
+            transcript.push({ role: 'test_caller', content: goodbye, timestamp: Date.now() });
+            
+            try {
+              const ttsResult = await ttsService.generateSpeech({ text: goodbye });
+              ws.send(ttsResult.audioBuffer);
+            } catch (e) {
+              console.error('[BatchedExecutor] Haptik TTS error:', e);
+            }
+            
+            setTimeout(() => {
+              haptikProvider.endVoiceCall(agentConfig.apiKey, voiceCall.callId);
+              ws.close();
+            }, 3000);
+          } else {
+            // Generate response
+            const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+            const response = await this.generateBatchTestCallerResponse(
+              conversationHistory,
+              remainingCases,
+              testedCases.size
+            );
+            
+            if (response.testCaseId) {
+              testedCases.add(response.testCaseId);
+            }
+            
+            console.log(`[BatchedExecutor] Haptik Test Caller (turn ${turnCount}): ${response.text}`);
+            
+            transcript.push({
+              role: 'test_caller',
+              content: response.text,
+              timestamp: Date.now(),
+              testCaseId: response.testCaseId,
+            });
+            
+            conversationHistory.push({ role: 'assistant', content: response.text });
+            
+            // Send audio to Haptik
+            try {
+              const ttsResult = await ttsService.generateSpeech({ text: response.text });
+              audioChunks.push(ttsResult.audioBuffer);
+              ws.send(ttsResult.audioBuffer);
+            } catch (e) {
+              console.error('[BatchedExecutor] Haptik TTS error:', e);
+            }
+          }
+          
+          currentAgentResponse = '';
+          isProcessingResponse = false;
+        };
+        
+        ws.on('open', () => {
+          console.log(`[BatchedExecutor] Haptik WebSocket connected`);
+          
+          // Send initial greeting
+          setTimeout(async () => {
+            try {
+              const greeting = "Hello?";
+              const ttsResult = await ttsService.generateSpeech({ text: greeting });
+              ws.send(ttsResult.audioBuffer);
+            } catch (e) {
+              console.error('[BatchedExecutor] Haptik greeting error:', e);
+            }
+          }, 2000);
+        });
+        
+        ws.on('message', async (data: Buffer) => {
+          try {
+            const message = JSON.parse(data.toString());
+            
+            // Handle transcript messages
+            if (message.type === 'transcript' || message.type === 'bot_response') {
+              const agentText = message.text || message.content || message.response || '';
+              if (agentText) {
+                currentAgentResponse += agentText + ' ';
+                
+                if (silenceTimer) clearTimeout(silenceTimer);
+                silenceTimer = setTimeout(() => {
+                  if (currentAgentResponse.trim()) {
+                    processAgentTurn();
+                  }
+                }, 1500);
+              }
+            }
+            
+          } catch (e) {
+            // Binary audio data
+            if (Buffer.isBuffer(data)) {
+              audioChunks.push(data);
+            }
+          }
+        });
+        
+        ws.on('close', async (code, reason) => {
+          clearTimeout(timeout);
+          if (silenceTimer) clearTimeout(silenceTimer);
+          console.log(`[BatchedExecutor] Haptik WebSocket closed. Code: ${code}`);
+          
+          // Fetch final transcript from Haptik API
+          try {
+            await new Promise(r => setTimeout(r, 2000));
+            const callTranscript = await haptikProvider.getCallTranscript(agentConfig.apiKey, voiceCall.callId);
+            
+            if (callTranscript?.turns && callTranscript.turns.length > 0) {
+              console.log(`[BatchedExecutor] Got Haptik transcript with ${callTranscript.turns.length} turns`);
+              
+              // If we didn't get messages via WebSocket, use the final transcript
+              if (transcript.length < 3) {
+                transcript.length = 0;
+                for (const turn of callTranscript.turns) {
+                  transcript.push({
+                    role: turn.role === 'bot' ? 'ai_agent' : 'test_caller',
+                    content: turn.text,
+                    timestamp: Date.now(),
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.error('[BatchedExecutor] Error fetching Haptik transcript:', e);
+          }
+          
+          console.log(`[BatchedExecutor] Haptik final stats: ${transcript.length} messages`);
+          resolve({ success: true });
+        });
+        
+        ws.on('error', (error) => {
+          console.error('[BatchedExecutor] Haptik WebSocket error:', error);
+          resolve({ success: false, error: error.message });
+        });
+        
+      } catch (error) {
+        console.error('[BatchedExecutor] Haptik error:', error);
+        resolve({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+  }
+
+  /**
+   * Execute Haptik test using Message API (fallback for when voice is not available)
+   * Text-based testing using Haptik's sendMessage API
+   */
+  private async executeHaptikMessageAPI(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Using Haptik Message API for batch: ${batch.name}`);
+      
+      // Build test caller prompt
+      const testCallerPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      const testCallerHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: testCallerPrompt }
+      ];
+      
+      const testedCases = new Set<string>();
+      let sessionId: string | undefined;
+      let turnCount = 0;
+      const maxTurns = Math.min(batch.testCases.length * 3 + 5, 30);
+      
+      // Initial greeting
+      const initialGreeting = await this.generateBatchTestCallerResponse(
+        testCallerHistory,
+        batch.testCases,
+        0
+      );
+      
+      if (initialGreeting.text) {
+        console.log(`[BatchedExecutor] Haptik test caller: ${initialGreeting.text.substring(0, 50)}...`);
+        
+        // Send to Haptik Message API
+        const response = await haptikProvider.sendMessage(
+          agentConfig.apiKey,
+          agentConfig.agentId,
+          initialGreeting.text,
+          undefined,
+          sessionId
+        );
+        
+        if (!response) {
+          return { success: false, error: 'Failed to get initial response from Haptik' };
+        }
+        
+        transcript.push({
+          role: 'test_caller',
+          content: initialGreeting.text,
+          timestamp: Date.now(),
+          testCaseId: initialGreeting.testCaseId,
+        });
+        
+        sessionId = response.sessionId;
+        
+        if (response.response) {
+          transcript.push({
+            role: 'ai_agent',
+            content: response.response,
+            timestamp: Date.now(),
+          });
+          testCallerHistory.push({ role: 'user', content: response.response });
+        }
+        
+        if (initialGreeting.testCaseId) {
+          testedCases.add(initialGreeting.testCaseId);
+        }
+        testCallerHistory.push({ role: 'assistant', content: initialGreeting.text });
+        turnCount++;
+      }
+      
+      // Continue conversation
+      while (turnCount < maxTurns && testedCases.size < batch.testCases.length) {
+        const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+        const testCallerResponse = await this.generateBatchTestCallerResponse(
+          testCallerHistory,
+          remainingCases,
+          testedCases.size
+        );
+        
+        if (!testCallerResponse.text || this.isGoodbyeMessage(testCallerResponse.text)) {
+          break;
+        }
+        
+        console.log(`[BatchedExecutor] Haptik turn ${turnCount}: ${testCallerResponse.text.substring(0, 80)}...`);
+        
+        const response = await haptikProvider.sendMessage(
+          agentConfig.apiKey,
+          agentConfig.agentId,
+          testCallerResponse.text,
+          undefined,
+          sessionId
+        );
+        
+        if (!response) {
+          break;
+        }
+        
+        transcript.push({
+          role: 'test_caller',
+          content: testCallerResponse.text,
+          timestamp: Date.now(),
+          testCaseId: testCallerResponse.testCaseId,
+        });
+        
+        sessionId = response.sessionId;
+        
+        if (response.response) {
+          transcript.push({
+            role: 'ai_agent',
+            content: response.response,
+            timestamp: Date.now(),
+          });
+          testCallerHistory.push({ role: 'user', content: response.response });
+        }
+        
+        if (testCallerResponse.testCaseId) {
+          testedCases.add(testCallerResponse.testCaseId);
+        }
+        testCallerHistory.push({ role: 'assistant', content: testCallerResponse.text });
+        turnCount++;
+        
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+      console.log(`[BatchedExecutor] Haptik Message API completed: ${transcript.length} turns, ${testedCases.size}/${batch.testCases.length} tested`);
+      return { success: true };
+      
+    } catch (error) {
+      console.error(`[BatchedExecutor] Haptik Message API error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Execute VAPI test using text simulation (fallback if Chat API fails)
+   * Fetches assistant config and simulates conversation using OpenAI
+   */
+  private async executeVAPITextSimulation(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Starting VAPI text simulation for batch: ${batch.name}`);
+
+      // Step 1: Fetch VAPI assistant configuration
+      const assistantConfig = await this.fetchVAPIAssistantConfig(agentConfig.agentId, agentConfig.apiKey);
+      if (!assistantConfig) {
+        return { success: false, error: 'Failed to fetch VAPI assistant configuration' };
+      }
+
+      console.log(`[BatchedExecutor] VAPI assistant: ${assistantConfig.firstMessage?.substring(0, 50)}...`);
+
+      // Step 2: Build test caller prompt
+      const testCallerPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      const testCallerHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: testCallerPrompt }
+      ];
+
+      // Step 3: Build agent history
+      const agentHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+      if (assistantConfig.systemPrompt) {
+        agentHistory.push({ role: 'system', content: assistantConfig.systemPrompt });
+      }
+
+      // Step 4: Start with agent's first message
+      let turnCount = 0;
+      const minTurns = Math.max(15, batch.testCases.length * 3);
+      const maxTurns = Math.min(minTurns + 10, 40);
+
+      if (assistantConfig.firstMessage) {
+        transcript.push({
+          role: 'ai_agent',
+          content: assistantConfig.firstMessage,
+          timestamp: Date.now(),
+        });
+        agentHistory.push({ role: 'assistant', content: assistantConfig.firstMessage });
+        testCallerHistory.push({ role: 'user', content: assistantConfig.firstMessage });
+        turnCount++;
+      }
+
+      // Step 5: Run multi-turn conversation
+      const testedCases = new Set<string>();
+      
+      while (turnCount < maxTurns) {
+        // Generate test caller response
+        const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+        const testCallerResponse = await this.generateBatchTestCallerResponse(
+          testCallerHistory,
+          remainingCases,
+          testedCases.size
+        );
+
+        if (!testCallerResponse.text) {
+          console.log(`[BatchedExecutor] VAPI sim: Test caller ended conversation`);
+          break;
+        }
+
+        transcript.push({
+          role: 'test_caller',
+          content: testCallerResponse.text,
+          timestamp: Date.now(),
+          testCaseId: testCallerResponse.testCaseId,
+        });
+        agentHistory.push({ role: 'user', content: testCallerResponse.text });
+        testCallerHistory.push({ role: 'assistant', content: testCallerResponse.text });
+
+        if (testCallerResponse.testCaseId) {
+          testedCases.add(testCallerResponse.testCaseId);
+        }
+
+        // Check for goodbye
+        if (this.isGoodbyeMessage(testCallerResponse.text)) {
+          console.log(`[BatchedExecutor] VAPI sim: Test caller said goodbye`);
+          break;
+        }
+
+        // Generate agent response
+        const agentResponse = await this.generateVAPIAgentResponse(agentHistory, assistantConfig);
+
+        if (!agentResponse) {
+          console.log(`[BatchedExecutor] VAPI sim: Agent ended conversation`);
+          break;
+        }
+
+        transcript.push({
+          role: 'ai_agent',
+          content: agentResponse,
+          timestamp: Date.now(),
+        });
+        agentHistory.push({ role: 'assistant', content: agentResponse });
+        testCallerHistory.push({ role: 'user', content: agentResponse });
+        turnCount++;
+
+        // Check for end conditions
+        if (this.shouldEndBatchConversation(agentResponse, turnCount, testedCases.size, batch.testCases.length)) {
+          console.log(`[BatchedExecutor] VAPI sim: Ending conversation`);
+          break;
+        }
+      }
+
+      console.log(`[BatchedExecutor] VAPI simulation completed: ${transcript.length} turns, ${testedCases.size}/${batch.testCases.length} scenarios tested`);
+      return { success: true };
+
+    } catch (error) {
+      console.error(`[BatchedExecutor] VAPI simulation error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Fetch VAPI assistant configuration
+   */
+  private async fetchVAPIAssistantConfig(
+    assistantId: string,
+    apiKey: string
+  ): Promise<{ systemPrompt: string | null; firstMessage: string | null; model: string | null } | null> {
+    try {
+      const response = await fetch(`https://api.vapi.ai/assistant/${assistantId}`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+      });
+
+      if (!response.ok) {
+        console.error(`[BatchedExecutor] Failed to fetch VAPI assistant: ${await response.text()}`);
+        return null;
+      }
+
+      const data = await response.json() as {
+        model?: {
+          messages?: Array<{ role: string; content: string }>;
+          systemPrompt?: string;
+          model?: string;
+        };
+        firstMessage?: string;
+      };
+
+      let systemPrompt: string | null = null;
+      if (data.model?.messages && Array.isArray(data.model.messages)) {
+        const systemMsg = data.model.messages.find(m => m.role === 'system');
+        if (systemMsg) systemPrompt = systemMsg.content;
+      }
+      if (!systemPrompt && data.model?.systemPrompt) {
+        systemPrompt = data.model.systemPrompt;
+      }
+
+      return {
+        systemPrompt,
+        firstMessage: data.firstMessage || null,
+        model: data.model?.model || null,
+      };
+    } catch (error) {
+      console.error(`[BatchedExecutor] Error fetching VAPI assistant:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Generate VAPI agent response using OpenAI
+   */
+  private async generateVAPIAgentResponse(
+    conversation: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    config: { model: string | null }
+  ): Promise<string | null> {
+    try {
+      const model = (config.model?.includes('gpt') ? config.model : 'gpt-4o-mini') as 'gpt-4o-mini' | 'gpt-4o' | 'gpt-4';
+
+      const response = await this.openai.chat.completions.create({
+        model,
+        messages: conversation,
+        temperature: 0.7,
+        max_tokens: 300,
+      });
+
+      return response.choices[0]?.message?.content || null;
+    } catch (error) {
+      console.error(`[BatchedExecutor] Error generating VAPI agent response:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if message is a goodbye
+   */
+  private isGoodbyeMessage(message: string): boolean {
+    const patterns = [/\bgoodbye\b/i, /\bbye\b/i, /\btake care\b/i, /\bthank you.*that's all\b/i];
+    return patterns.some(p => p.test(message));
   }
 
   /**

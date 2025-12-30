@@ -11,8 +11,19 @@ export interface ProviderValidationResult {
     plan?: string;
     creditsRemaining?: number;
     agentsCount?: number;
+    concurrencyLimit?: number;  // Max concurrent calls allowed
+    currentConcurrency?: number; // Current active calls
     [key: string]: any;
   };
+}
+
+export interface ProviderLimits {
+  concurrencyLimit: number;  // Max concurrent calls
+  currentConcurrency?: number; // Current active calls (if available)
+  callDurationLimitMs?: number; // Max call duration
+  rateLimitPerMinute?: number; // API rate limit
+  characterLimit?: number; // For TTS providers
+  source: 'api' | 'plan' | 'default'; // Where the limit came from
 }
 
 export interface VoiceAgent {
@@ -71,6 +82,11 @@ export interface VoiceProviderClient {
    * Get details of a specific agent
    */
   getAgent(apiKey: string, agentId: string): Promise<VoiceAgent | null>;
+
+  /**
+   * Get provider limits (concurrency, rate limits, etc.)
+   */
+  getLimits?(apiKey: string): Promise<ProviderLimits>;
 
   /**
    * Generate TTS audio (if supported)

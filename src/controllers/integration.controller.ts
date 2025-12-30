@@ -247,6 +247,25 @@ export class IntegrationController {
       next(error);
     }
   }
+
+  /**
+   * Get provider limits (concurrency, etc.)
+   */
+  async getLimits(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+
+      const limits = await integrationService.getProviderLimits(id);
+
+      if (!limits) {
+        return res.status(404).json({ error: 'Integration not found or inactive' });
+      }
+
+      res.json({ limits });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const integrationController = new IntegrationController();
