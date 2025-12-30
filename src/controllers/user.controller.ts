@@ -32,6 +32,22 @@ export class UserController {
       next(error);
     }
   }
+
+  async getDashboardStats(req: Request, res: Response, next: NextFunction) {
+    try {
+      const clerkUser = (req as any).auth;
+      if (!clerkUser?.userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      const stats = await userService.getDashboardStats(user.id);
+
+      res.json({ stats });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const userController = new UserController();

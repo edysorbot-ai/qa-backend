@@ -116,6 +116,84 @@ export class UserService {
     );
     return (result.rowCount ?? 0) > 0;
   }
+
+  async getDashboardStats(userId: string): Promise<{
+    totalAgents: number;
+    totalTestCases: number;
+    totalTestRuns: number;
+    passRate: number;
+    recentTestRuns: any[];
+    topAgents: any[];
+  }> {
+    // Get total agents
+    const agentsResult = await query(
+      'SELECT COUNT(*)::int as count FROM agents WHERE user_id = $1',
+      [userId]
+    );
+    const totalAgents = agentsResult.rows[0]?.count || 0;
+
+    // Get total test cases
+    const testCasesResult = await query(
+      'SELECT COUNT(*)::int as count FROM test_cases WHERE user_id = $1',
+      [userId]
+    );
+    const totalTestCases = testCasesResult.rows[0]?.count || 0;
+
+    // Get test run stats
+    const testRunsResult = await query(
+      `SELECT 
+        COUNT(*)::int as total_runs,
+        COALESCE(SUM(passed_tests), 0)::int as total_passed,
+        COALESCE(SUM(failed_tests), 0)::int as total_failed,
+        COALESCE(SUM(total_tests), 0)::int as total_tests
+       FROM test_runs 
+       WHERE user_id = $1 AND status = 'completed'`,
+      [userId]
+    );
+    const stats = testRunsResult.rows[0];
+    const totalTestRuns = stats?.total_runs || 0;
+    const passRate = stats?.total_tests > 0 
+      ? Math.round((stats.total_passed / stats.total_tests) * 100) 
+      : 0;
+
+    // Get recent test runs (last 5)
+    const recentRunsResult = await query(
+      `SELECT tr.id, tr.name, tr.status, tr.total_tests, tr.passed_tests, tr.failed_tests, 
+              tr.created_at, tr.completed_at, a.name as agent_name
+       FROM test_runs tr
+       LEFT JOIN agents a ON tr.agent_id = a.id
+       WHERE tr.user_id = $1
+       ORDER BY tr.created_at DESC
+       LIMIT 5`,
+      [userId]
+    );
+    const recentTestRuns = recentRunsResult.rows;
+
+    // Get top agents by test runs
+    const topAgentsResult = await query(
+      `SELECT a.id, a.name, a.provider, 
+              COUNT(tr.id)::int as test_run_count,
+              COALESCE(SUM(tr.passed_tests), 0)::int as total_passed,
+              COALESCE(SUM(tr.total_tests), 0)::int as total_tests
+       FROM agents a
+       LEFT JOIN test_runs tr ON a.id = tr.agent_id AND tr.status = 'completed'
+       WHERE a.user_id = $1
+       GROUP BY a.id, a.name, a.provider
+       ORDER BY test_run_count DESC
+       LIMIT 5`,
+      [userId]
+    );
+    const topAgents = topAgentsResult.rows;
+
+    return {
+      totalAgents,
+      totalTestCases,
+      totalTestRuns,
+      passRate,
+      recentTestRuns,
+      topAgents,
+    };
+  }
 }
 
 export const userService = new UserService();
