@@ -48,6 +48,11 @@ export const initializeDatabase = async () => {
       )
     `);
 
+    // Allow null integration_id for custom agents
+    await query(`
+      ALTER TABLE agents ALTER COLUMN integration_id DROP NOT NULL
+    `).catch(() => {});  // Ignore if already nullable
+
     // Test Cases table
     await query(`
       CREATE TABLE IF NOT EXISTS test_cases (

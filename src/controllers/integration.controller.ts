@@ -1,14 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
 import { integrationService } from '../services/integration.service';
 import { userService } from '../services/user.service';
+import { teamMemberService } from '../services/teamMember.service';
 
 export class IntegrationController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
-      const integrations = await integrationService.findByUserId(user.id);
+      const integrations = await integrationService.findByUserId(effectiveUserId);
       
       // Mask API keys
       const maskedIntegrations = integrations.map(i => ({
@@ -47,6 +51,9 @@ export class IntegrationController {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { provider, api_key, validate = false } = req.body;
 
@@ -57,7 +64,7 @@ export class IntegrationController {
       // If validate flag is true, validate before saving
       if (validate) {
         const { integration, validation } = await integrationService.createWithValidation({
-          user_id: user.id,
+          user_id: effectiveUserId,
           provider,
           api_key,
         });
@@ -84,7 +91,7 @@ export class IntegrationController {
 
       // Save without validation (default)
       const integration = await integrationService.create({
-        user_id: user.id,
+        user_id: effectiveUserId,
         provider,
         api_key,
       });

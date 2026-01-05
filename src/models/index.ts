@@ -4,3 +4,6 @@ export * from './agent.model';
 export * from './testCase.model';
 export * from './testRun.model';
 export * from './testResult.model';
+export * from './scheduledTest.model';
+export * from './alertSettings.model';
+export * from './teamMember.model';

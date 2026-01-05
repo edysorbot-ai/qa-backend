@@ -47,7 +47,8 @@ app.get('/api/docs.json', (req, res) => {
 });
 
 // Public audio recordings endpoint (no auth required)
-// Serves audio files from recordings directory with WAV conversion
+// Serves audio files from recordings directory
+// Supports both ulaw raw files (Twilio) and MP3 files (custom agents)
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -65,22 +66,36 @@ app.get('/api/audio/:filename', (req, res) => {
       return res.status(404).json({ error: 'Audio file not found' });
     }
     
-    // Read the raw audio file (ulaw 8kHz mono)
+    // Read the audio file
     const audioData = fs.readFileSync(filePath);
-    
-    // Convert raw ulaw to PCM WAV for browser playback
-    const wavBuffer = createWavFromUlaw(audioData);
     
     // Set CORS headers for cross-origin audio playback
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    res.setHeader('Content-Type', 'audio/wav');
-    res.setHeader('Content-Length', wavBuffer.length);
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.setHeader('Content-Disposition', `inline; filename="${sanitizedFilename.replace('.raw', '.wav')}"`);
     res.setHeader('Accept-Ranges', 'bytes');
     
-    res.send(wavBuffer);
+    // Check if it's an MP3 file by looking at header bytes
+    // MP3 files start with 0xFF 0xFB, 0xFF 0xFA, 0xFF 0xF3, 0xFF 0xF2 or ID3 tag
+    const isMP3 = (audioData.length > 3) && (
+      (audioData[0] === 0xFF && (audioData[1] & 0xE0) === 0xE0) || // MPEG sync word
+      (audioData[0] === 0x49 && audioData[1] === 0x44 && audioData[2] === 0x33) // ID3 tag
+    );
+    
+    if (isMP3) {
+      // Serve MP3 directly (from ElevenLabs TTS)
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Content-Length', audioData.length);
+      res.setHeader('Content-Disposition', `inline; filename="${sanitizedFilename.replace('.raw', '.mp3')}"`);
+      res.send(audioData);
+    } else {
+      // Convert raw ulaw to PCM WAV for browser playback (from Twilio)
+      const wavBuffer = createWavFromUlaw(audioData);
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Length', wavBuffer.length);
+      res.setHeader('Content-Disposition', `inline; filename="${sanitizedFilename.replace('.raw', '.wav')}"`);
+      res.send(wavBuffer);
+    }
   } catch (error) {
     console.error('Error serving audio:', error);
     res.status(500).json({ error: 'Failed to serve audio file' });

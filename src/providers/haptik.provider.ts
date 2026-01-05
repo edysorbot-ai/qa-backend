@@ -439,6 +439,143 @@ export class HaptikProvider implements VoiceProviderClient {
       };
     }
   }
+
+  /**
+   * Check if this provider supports chat-based testing
+   * Haptik is primarily a chat platform, so chat testing is fully supported
+   */
+  supportsChatTesting(): boolean {
+    return true;
+  }
+
+  /**
+   * Send a text chat message to Haptik bot
+   * Uses the message API for cost-effective testing
+   * This is a wrapper around sendMessage to match the common interface
+   */
+  async chat(
+    apiKey: string,
+    agentId: string,
+    message: string,
+    options: {
+      sessionId?: string;
+      previousChatId?: string;
+    } = {}
+  ): Promise<{
+    id: string;
+    output: Array<{ role: string; message: string }>;
+    messages: Array<{ role: string; message: string }>;
+    sessionId?: string;
+    rawResponse?: any;
+  } | null> {
+    try {
+      console.log(`[Haptik Chat] Sending message to bot ${agentId}: "${message.substring(0, 100)}..."`);
+
+      // Use the existing sendMessage method
+      const result = await this.sendMessage(
+        apiKey,
+        agentId,
+        message,
+        undefined,  // userId will be auto-generated
+        options.sessionId
+      );
+
+      if (!result) {
+        console.error('[Haptik Chat] No response from sendMessage');
+        return null;
+      }
+
+      console.log(`[Haptik Chat] Response received:`, JSON.stringify(result, null, 2));
+
+      // Format the output
+      const outputMessages: Array<{ role: string; message: string }> = [];
+      if (result.response) {
+        outputMessages.push({
+          role: 'assistant',
+          message: result.response,
+        });
+      }
+
+      return {
+        id: `haptik_${Date.now()}`,
+        output: outputMessages,
+        messages: outputMessages,
+        sessionId: result.sessionId,
+        rawResponse: result,
+      };
+    } catch (error) {
+      console.error('[Haptik Chat] Error sending chat message:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Run a multi-turn chat conversation with Haptik bot
+   * Uses the message API for cost-effective testing
+   */
+  async runChatConversation(
+    apiKey: string,
+    agentId: string,
+    userMessages: string[]
+  ): Promise<{
+    success: boolean;
+    transcript: Array<{ role: string; content: string; timestamp: number }>;
+    error?: string;
+  }> {
+    const transcript: Array<{ role: string; content: string; timestamp: number }> = [];
+    let sessionId: string | undefined;
+
+    try {
+      for (const userMessage of userMessages) {
+        // Add user message to transcript
+        transcript.push({
+          role: 'test_caller',
+          content: userMessage,
+          timestamp: Date.now(),
+        });
+
+        // Send to Haptik Chat API
+        const response = await this.chat(apiKey, agentId, userMessage, {
+          sessionId,
+        });
+
+        if (!response) {
+          return {
+            success: false,
+            transcript,
+            error: 'Failed to get response from Haptik Chat API',
+          };
+        }
+
+        // Track session ID for continuity
+        if (response.sessionId) {
+          sessionId = response.sessionId;
+        }
+
+        // Add assistant responses to transcript
+        for (const output of response.output) {
+          if (output.message) {
+            transcript.push({
+              role: 'ai_agent',
+              content: output.message,
+              timestamp: Date.now(),
+            });
+          }
+        }
+
+        // Small delay between messages
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      return { success: true, transcript };
+    } catch (error) {
+      return {
+        success: false,
+        transcript,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
 }
 
 export const haptikProvider = new HaptikProvider();

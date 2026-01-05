@@ -4,12 +4,18 @@
  * Enhanced test case generation that:
  * 1. Extracts key topics from agent prompts
  * 2. Generates test cases organized by topics
- * 3. Supports batching test cases for efficient single-call testing
+ * 3. Uses AI-POWERED INTELLIGENT BATCHING based on prompt analysis
  * 4. Provides comprehensive metrics analysis
  */
 
 import OpenAI from 'openai';
 import { config } from '../config';
+import { 
+  IntelligentBatchingService, 
+  intelligentBatchingService,
+  type IntelligentBatch,
+  type TestCaseForBatching,
+} from './intelligent-batching.service';
 
 // ============ INTERFACES ============
 
@@ -67,6 +73,19 @@ export interface CallBatch {
   primaryTopic: string;
   description: string;
   semanticFlow?: string; // Description of the semantic flow this batch tests
+  // Test mode: 'voice' for voice-based testing, 'chat' for text-based testing (cost-effective)
+  testMode?: 'voice' | 'chat';
+  testModeReason?: string;
+  // AI-powered intelligent batching metadata
+  intelligentBatchMetadata?: {
+    callEndingTestCase?: string; // ID of test case that will end the call (always last)
+    fallbackPaths: Array<{
+      ifTestCaseFails: string;
+      action: 'skip_remaining' | 'continue_with_context' | 'try_alternative';
+      alternativeTestCases?: string[];
+    }>;
+    confidenceScore: number; // 0-100, AI's confidence in this batch grouping
+  };
 }
 
 export interface TestPlan {
@@ -198,9 +217,10 @@ export class SmartTestCaseGeneratorService {
     const testCases = await this.generateTestCasesByTopics(agentAnalysis, agentPrompt, keyTopics, maxTestCases);
     console.log(`[SmartTestCaseGenerator] Generated ${testCases.length} test cases`);
     
-    // Step 4: Create optimal test plan with batching
-    const testPlan = await this.createTestPlan(testCases, keyTopics);
-    console.log(`[SmartTestCaseGenerator] Created test plan with ${testPlan.totalCalls} calls`);
+    // Step 4: Create optimal test plan with AI-POWERED INTELLIGENT BATCHING
+    const agentFirstMessage = agentConfig.firstMessage || agentConfig.first_message || agentConfig.greeting || '';
+    const testPlan = await this.createTestPlanWithIntelligentBatching(testCases, agentPrompt, agentFirstMessage);
+    console.log(`[SmartTestCaseGenerator] Created AI-optimized test plan with ${testPlan.totalCalls} calls`);
     
     return {
       agentAnalysis,
@@ -573,7 +593,119 @@ Generate comprehensive test cases covering ALL key topics with MULTIPLE scenario
   }
 
   /**
-   * Create optimal test plan with batched calls
+   * Create optimal test plan using AI-POWERED INTELLIGENT BATCHING
+   * 
+   * This method:
+   * 1. Analyzes the agent's prompt to understand conversation flow, call closing conditions
+   * 2. Analyzes each test case to understand dependencies, natural ordering
+   * 3. Creates intelligent batches where:
+   *    - Test cases are ordered logically for natural conversation
+   *    - Call-ending test cases are always last in their batch
+   *    - Incompatible test cases are never in the same batch
+   *    - Fallback paths are generated for handling failures
+   */
+  private async createTestPlanWithIntelligentBatching(
+    testCases: SmartTestCase[],
+    agentPrompt: string,
+    agentFirstMessage: string
+  ): Promise<TestPlan> {
+    console.log(`[SmartTestCaseGenerator] Starting AI-powered intelligent batching for ${testCases.length} test cases`);
+    
+    try {
+      // Convert SmartTestCase to TestCaseForBatching format
+      const testCasesForBatching: TestCaseForBatching[] = testCases.map(tc => ({
+        id: tc.id,
+        name: tc.name,
+        scenario: tc.scenario,
+        userInput: tc.userInput,
+        expectedBehavior: tc.expectedOutcome,
+        expectedOutcome: tc.expectedOutcome,
+        category: tc.keyTopicName,
+        keyTopic: tc.keyTopicName,
+        priority: tc.priority as 'high' | 'medium' | 'low',
+      }));
+      
+      // Use the AI-powered intelligent batching service
+      const batchingResult = await intelligentBatchingService.createIntelligentBatches(
+        agentPrompt,
+        agentFirstMessage,
+        testCasesForBatching,
+        {
+          maxTestsPerBatch: 5, // Optimal for natural conversation
+          prioritizeCallEnding: true,
+        }
+      );
+      
+      console.log(`[SmartTestCaseGenerator] Intelligent batching complete:`);
+      console.log(`[SmartTestCaseGenerator]   - ${batchingResult.batches.length} batches created`);
+      console.log(`[SmartTestCaseGenerator]   - Strategy: ${batchingResult.summary.batchingStrategy}`);
+      console.log(`[SmartTestCaseGenerator]   - Estimated duration: ${batchingResult.summary.estimatedTotalDuration}`);
+      
+      // Convert intelligent batches to CallBatch format
+      const batches: CallBatch[] = batchingResult.batches.map((ib, idx) => {
+        // Find the matching SmartTestCase for each test case in the batch
+        const batchTestCases = ib.testCaseOrder.map(tcId => {
+          const tc = testCases.find(t => t.id === tcId);
+          return tc!;
+        }).filter(Boolean);
+        
+        return {
+          id: `intelligent-batch-${idx + 1}`,
+          name: ib.name,
+          testCaseIds: ib.testCaseOrder,
+          testCases: batchTestCases,
+          estimatedDuration: this.parseEstimatedDuration(ib.estimatedDuration),
+          primaryTopic: batchTestCases[0]?.keyTopicName || 'General',
+          description: ib.reasoning,
+          semanticFlow: ib.conversationFlow,
+          // Store intelligent batching metadata for use in execution
+          intelligentBatchMetadata: {
+            callEndingTestCase: ib.callEndingTestCase,
+            fallbackPaths: ib.fallbackPaths,
+            confidenceScore: ib.batchConfidenceScore,
+          },
+        };
+      });
+      
+      const totalDuration = batches.reduce((sum, b) => sum + b.estimatedDuration, 0);
+      
+      return {
+        totalCalls: batches.length,
+        totalTestCases: testCases.length,
+        estimatedDuration: totalDuration,
+        batches,
+      };
+      
+    } catch (error) {
+      console.error('[SmartTestCaseGenerator] Intelligent batching failed, falling back to legacy batching:', error);
+      // Fallback to legacy batching if AI fails
+      const keyTopics = testCases.map(tc => ({
+        id: tc.keyTopicId,
+        name: tc.keyTopicName,
+        description: '',
+        importance: 'medium' as const,
+        testableAspects: [],
+        relatedTopics: [],
+      }));
+      return this.createTestPlan(testCases, keyTopics);
+    }
+  }
+
+  /**
+   * Parse estimated duration string to seconds
+   */
+  private parseEstimatedDuration(durationStr: string): number {
+    // Parse strings like "30-45 seconds" or "2-3 minutes"
+    const match = durationStr.match(/(\d+)-(\d+)\s*(seconds?|minutes?)/i);
+    if (match) {
+      const avg = (parseInt(match[1]) + parseInt(match[2])) / 2;
+      return match[3].toLowerCase().startsWith('minute') ? avg * 60 : avg;
+    }
+    return 120; // Default 2 minutes
+  }
+
+  /**
+   * Legacy: Create optimal test plan with batched calls (kept for fallback)
    */
   private async createTestPlan(
     testCases: SmartTestCase[],

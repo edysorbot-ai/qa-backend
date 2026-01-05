@@ -1,3 +1,11 @@
+/**
+ * Test mode determines whether a test case should be executed via voice or chat API
+ * - 'voice': Requires real voice testing (e.g., interruption handling, voice quality)
+ * - 'chat': Can be tested via text-based chat API (e.g., happy path, basic flows)
+ * - 'auto': AI will determine the best mode based on test case analysis
+ */
+export type TestMode = 'voice' | 'chat' | 'auto';
+
 export interface TestCase {
   id: string;
   agent_id: string;
@@ -11,6 +19,7 @@ export interface TestCase {
   category?: string;
   priority?: 'high' | 'medium' | 'low';
   batch_compatible?: boolean;
+  test_mode?: TestMode;  // Whether to test via voice or chat
   created_at: Date;
   updated_at: Date;
 }
@@ -27,6 +36,7 @@ export interface CreateTestCaseDTO {
   category?: string;
   priority?: 'high' | 'medium' | 'low';
   batch_compatible?: boolean;
+  test_mode?: TestMode;
 }
 
 export interface UpdateTestCaseDTO {
@@ -39,4 +49,5 @@ export interface UpdateTestCaseDTO {
   category?: string;
   priority?: 'high' | 'medium' | 'low';
   batch_compatible?: boolean;
+  test_mode?: TestMode;
 }

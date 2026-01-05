@@ -7,23 +7,27 @@ import { agentService } from '../services/agent.service';
 import { integrationService } from '../services/integration.service';
 import { workflowTestExecutorService } from '../services/workflow-test-executor.service';
 import { WorkflowExecutionPlan } from '../models/workflow.model';
+import { teamMemberService } from '../services/teamMember.service';
 
 export class TestRunController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { agent_id, limit } = req.query;
-      console.log('[TestRunController.getAll] agent_id:', agent_id, 'user_id:', user.id);
+      console.log('[TestRunController.getAll] agent_id:', agent_id, 'effective_user_id:', effectiveUserId);
 
       let testRuns;
       if (agent_id) {
         // Also match by agent name in test run name for legacy runs without agent_id
-        testRuns = await testRunService.findByAgentIdOrName(agent_id as string, user.id, Number(limit) || 50);
+        testRuns = await testRunService.findByAgentIdOrName(agent_id as string, effectiveUserId, Number(limit) || 50);
         console.log('[TestRunController.getAll] Found by agent_id/name:', testRuns.length);
       } else {
-        testRuns = await testRunService.findByUserId(user.id, Number(limit) || 50);
+        testRuns = await testRunService.findByUserId(effectiveUserId, Number(limit) || 50);
         console.log('[TestRunController.getAll] Found by user_id:', testRuns.length);
       }
 
@@ -52,6 +56,9 @@ export class TestRunController {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { agent_id, name, config, test_case_ids } = req.body;
 
@@ -61,7 +68,7 @@ export class TestRunController {
 
       // Create test run
       const testRun = await testRunService.create({
-        user_id: user.id,
+        user_id: effectiveUserId,
         agent_id,
         name,
         config,

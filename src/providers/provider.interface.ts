@@ -67,6 +67,37 @@ export interface AgentCallResponse {
   metadata?: Record<string, any>;
 }
 
+/**
+ * Chat API request for text-based testing
+ */
+export interface ChatRequest {
+  agentId: string;
+  message: string;
+  sessionId?: string;
+  previousChatId?: string;
+  metadata?: Record<string, any>;
+}
+
+/**
+ * Chat API response for text-based testing
+ */
+export interface ChatResponse {
+  id: string;
+  sessionId?: string;
+  output: Array<{ role: string; message: string }>;
+  messages?: Array<{ role: string; message: string }>;
+  rawResponse?: any;
+}
+
+/**
+ * Result of a multi-turn chat conversation
+ */
+export interface ChatConversationResult {
+  success: boolean;
+  transcript: Array<{ role: string; content: string; timestamp: number }>;
+  error?: string;
+}
+
 export interface VoiceProviderClient {
   /**
    * Validate the API key and return account details
@@ -97,4 +128,30 @@ export interface VoiceProviderClient {
    * Make a call to the voice agent
    */
   callAgent?(apiKey: string, request: AgentCallRequest): Promise<AgentCallResponse>;
+
+  /**
+   * Send a text chat message to the agent (for chat-based testing)
+   * This is more cost-effective than voice for certain test scenarios
+   */
+  chat?(
+    apiKey: string,
+    agentId: string,
+    message: string,
+    options?: { sessionId?: string; previousChatId?: string }
+  ): Promise<ChatResponse | null>;
+
+  /**
+   * Run a multi-turn chat conversation with the agent
+   * For executing complete test scenarios via chat
+   */
+  runChatConversation?(
+    apiKey: string,
+    agentId: string,
+    userMessages: string[]
+  ): Promise<ChatConversationResult>;
+
+  /**
+   * Check if this provider supports chat-based testing
+   */
+  supportsChatTesting?(): boolean;
 }

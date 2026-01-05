@@ -19,6 +19,7 @@ import { config } from '../config';
 import { TTSService, TTSRequest } from './tts.service';
 import { ASRService } from './asr.service';
 import { conversationalTestAgent, ConversationalTestAgentService } from './conversational-test-agent.service';
+import { emailNotificationService } from './emailNotification.service';
 
 // ============= TYPES =============
 
@@ -261,6 +262,17 @@ export class RealTestExecutorService {
     console.log(`[RealTestExecutor] Passed: ${passedCount}, Failed: ${failedCount}`);
     console.log(`[RealTestExecutor] Overall Score: ${overallScore.toFixed(1)}%`);
     console.log(`${'='.repeat(60)}\n`);
+
+    // Send email notifications for failed tests
+    if (failedCount > 0) {
+      emailNotificationService.checkAndNotifyTestRunFailures(testRunId)
+        .then(sent => {
+          if (sent) {
+            console.log(`[RealTestExecutor] Failure notification sent for test run ${testRunId}`);
+          }
+        })
+        .catch(err => console.error('[RealTestExecutor] Failed to send notification:', err));
+    }
 
     return {
       testRunId,

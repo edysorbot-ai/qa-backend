@@ -5,14 +5,18 @@ import { promptVersionService } from '../services/promptVersion.service';
 import { configVersionService } from '../services/configVersion.service';
 import { integrationService } from '../services/integration.service';
 import { elevenlabsProvider } from '../providers/elevenlabs.provider';
+import { teamMemberService } from '../services/teamMember.service';
 
 export class AgentController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
-      const agents = await agentService.findByUserId(user.id);
+      const agents = await agentService.findByUserId(effectiveUserId);
       res.json({ agents });
     } catch (error) {
       next(error);
@@ -44,6 +48,9 @@ export class AgentController {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { integration_id, external_agent_id, name, provider, prompt, intents, config } = req.body;
 
@@ -52,7 +59,7 @@ export class AgentController {
       }
 
       const agent = await agentService.create({
-        user_id: user.id,
+        user_id: effectiveUserId,
         integration_id,
         external_agent_id,
         name,

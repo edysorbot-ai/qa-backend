@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { userService } from '../services/user.service';
+import { teamMemberService } from '../services/teamMember.service';
 
 export class UserController {
   async getMe(req: Request, res: Response, next: NextFunction) {
@@ -41,7 +42,11 @@ export class UserController {
       }
 
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
-      const stats = await userService.getDashboardStats(user.id);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
+      
+      const stats = await userService.getDashboardStats(effectiveUserId);
 
       res.json({ stats });
     } catch (error) {

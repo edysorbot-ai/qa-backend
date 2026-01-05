@@ -416,6 +416,160 @@ export class ElevenLabsProvider implements VoiceProviderClient {
       };
     }
   }
+
+  /**
+   * Check if this provider supports chat-based testing
+   * ElevenLabs Conversational AI supports text-based conversations
+   */
+  supportsChatTesting(): boolean {
+    return true;
+  }
+
+  /**
+   * Send a text chat message to ElevenLabs Conversational AI agent
+   * Uses the text-mode conversation API for cost-effective testing
+   * @see https://elevenlabs.io/docs/api-reference/conversational-ai
+   */
+  async chat(
+    apiKey: string,
+    agentId: string,
+    message: string,
+    options: {
+      sessionId?: string;
+      previousChatId?: string;
+    } = {}
+  ): Promise<{
+    id: string;
+    output: Array<{ role: string; message: string }>;
+    messages: Array<{ role: string; message: string }>;
+    sessionId?: string;
+    rawResponse?: any;
+  } | null> {
+    try {
+      console.log(`[ElevenLabs Chat] Sending message to agent ${agentId}: "${message.substring(0, 100)}..."`);
+
+      // ElevenLabs uses a conversation session endpoint for text-based interactions
+      const requestBody: any = {
+        agent_id: agentId,
+        text: message,
+      };
+
+      // If we have an existing session, continue it
+      if (options.sessionId) {
+        requestBody.conversation_id = options.sessionId;
+      }
+
+      const response = await this.request<any>(apiKey, '/convai/conversation/text', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      });
+
+      console.log(`[ElevenLabs Chat] Response received:`, JSON.stringify(response, null, 2));
+
+      // Extract output from ElevenLabs response format
+      let outputMessages: Array<{ role: string; message: string }> = [];
+
+      // Check for response text
+      if (response.response || response.text || response.agent_response) {
+        const text = response.response || response.text || response.agent_response;
+        outputMessages.push({
+          role: 'assistant',
+          message: typeof text === 'string' ? text : JSON.stringify(text),
+        });
+      }
+
+      // Check for messages array
+      if (response.messages && Array.isArray(response.messages)) {
+        for (const msg of response.messages) {
+          if (msg.role === 'assistant' || msg.role === 'agent') {
+            outputMessages.push({
+              role: 'assistant',
+              message: msg.content || msg.text || msg.message || '',
+            });
+          }
+        }
+      }
+
+      return {
+        id: response.conversation_id || response.id || 'unknown',
+        output: outputMessages,
+        messages: response.messages || [],
+        sessionId: response.conversation_id,
+        rawResponse: response,
+      };
+    } catch (error) {
+      console.error('[ElevenLabs Chat] Error sending chat message:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Run a multi-turn chat conversation with ElevenLabs agent
+   * Uses the text conversation API for cost-effective testing
+   */
+  async runChatConversation(
+    apiKey: string,
+    agentId: string,
+    userMessages: string[]
+  ): Promise<{
+    success: boolean;
+    transcript: Array<{ role: string; content: string; timestamp: number }>;
+    error?: string;
+  }> {
+    const transcript: Array<{ role: string; content: string; timestamp: number }> = [];
+    let conversationId: string | undefined;
+
+    try {
+      for (const userMessage of userMessages) {
+        // Add user message to transcript
+        transcript.push({
+          role: 'test_caller',
+          content: userMessage,
+          timestamp: Date.now(),
+        });
+
+        // Send to ElevenLabs Chat API
+        const response = await this.chat(apiKey, agentId, userMessage, {
+          sessionId: conversationId,
+        });
+
+        if (!response) {
+          return {
+            success: false,
+            transcript,
+            error: 'Failed to get response from ElevenLabs Chat API',
+          };
+        }
+
+        // Track conversation ID for continuity
+        if (response.sessionId) {
+          conversationId = response.sessionId;
+        }
+
+        // Add assistant responses to transcript
+        for (const output of response.output) {
+          if (output.message) {
+            transcript.push({
+              role: 'ai_agent',
+              content: output.message,
+              timestamp: Date.now(),
+            });
+          }
+        }
+
+        // Small delay between messages
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      return { success: true, transcript };
+    } catch (error) {
+      return {
+        success: false,
+        transcript,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
 }
 
 export const elevenlabsProvider = new ElevenLabsProvider();

@@ -1,12 +1,16 @@
 import { Request, Response, NextFunction } from 'express';
 import { testCaseService } from '../services/testCase.service';
 import { userService } from '../services/user.service';
+import { teamMemberService } from '../services/teamMember.service';
 
 export class TestCaseController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { agent_id } = req.query;
 
@@ -14,7 +18,7 @@ export class TestCaseController {
       if (agent_id) {
         testCases = await testCaseService.findByAgentId(agent_id as string);
       } else {
-        testCases = await testCaseService.findByUserId(user.id);
+        testCases = await testCaseService.findByUserId(effectiveUserId);
       }
 
       res.json({ testCases });
@@ -42,6 +46,9 @@ export class TestCaseController {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { agent_id, name, scenario } = req.body;
 
@@ -51,7 +58,7 @@ export class TestCaseController {
 
       const testCase = await testCaseService.create({
         agent_id,
-        user_id: user.id,
+        user_id: effectiveUserId,
         name,
         scenario,
       });

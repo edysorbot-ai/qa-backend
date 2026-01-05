@@ -444,6 +444,14 @@ export class VAPIProvider implements VoiceProviderClient {
       };
     }
   }
+
+  /**
+   * Check if this provider supports chat-based testing
+   * VAPI has a native Chat API for text-based testing
+   */
+  supportsChatTesting(): boolean {
+    return true;
+  }
 }
 
 export const vapiProvider = new VAPIProvider();

@@ -9,6 +9,7 @@ import { retellProvider } from './retell.provider';
 import { vapiProvider } from './vapi.provider';
 import { openaiRealtimeProvider } from './openai-realtime.provider';
 import { haptikProvider } from './haptik.provider';
+import { customProvider } from './custom.provider';
 
 export function getProviderClient(provider: Provider): VoiceProviderClient {
   switch (provider) {
@@ -22,6 +23,8 @@ export function getProviderClient(provider: Provider): VoiceProviderClient {
       return openaiRealtimeProvider;
     case 'haptik':
       return haptikProvider;
+    case 'custom':
+      return customProvider;
     default:
       throw new Error(`Unknown provider: ${provider}`);
   }
@@ -33,4 +36,5 @@ export const providerClients: Record<Provider, VoiceProviderClient> = {
   vapi: vapiProvider,
   openai_realtime: openaiRealtimeProvider,
   haptik: haptikProvider,
+  custom: customProvider,
 };

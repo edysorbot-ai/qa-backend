@@ -14,6 +14,7 @@ import {
   TestCase,
   TestRunConfig,
 } from '../services/real-test-executor.service';
+import { emailNotificationService } from '../services/emailNotification.service';
 
 // Create recordings directory if it doesn't exist
 const recordingsDir = path.join(__dirname, '../../recordings');
@@ -176,7 +177,7 @@ router.get('/status/:testRunId', async (req: Request, res: Response) => {
     // Get DB status (no queue dependency)
     const dbResult = await pool.query(
       `SELECT 
-        tr.id, tr.name, tr.status, tr.total_tests, tr.passed_tests, tr.failed_tests, tr.created_at
+        tr.id, tr.name, tr.status, tr.total_tests, tr.passed_tests, tr.failed_tests, tr.created_at, tr.agent_id
        FROM test_runs tr
        WHERE tr.id = $1`,
       [testRunId]
@@ -216,6 +217,7 @@ router.get('/status/:testRunId', async (req: Request, res: Response) => {
         name: testRun.name,
         status: testRun.status,
         createdAt: testRun.created_at,
+        agentId: testRun.agent_id,
         progress,
         stats: {
           total,
@@ -274,6 +276,7 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
         batch_id,
         batch_name,
         batch_order,
+        test_mode,
         user_transcript,
         agent_transcript,
         conversation_turns,
@@ -361,6 +364,7 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
           batchId: r.batch_id,
           batchName: r.batch_name,
           batchOrder: r.batch_order,
+          testMode: r.test_mode || 'voice',
           // Full conversation data
           userTranscript: r.user_transcript,
           agentTranscript: r.agent_transcript,
@@ -1041,12 +1045,18 @@ router.post('/modify-test-plan', async (req: Request, res: Response) => {
 });
 
 /**
- * Analyze test cases for optimal batching
+ * Analyze test cases for optimal batching using AI
  * POST /api/test-execution/analyze-for-batching
+ * 
+ * This endpoint uses AI-POWERED INTELLIGENT BATCHING that:
+ * 1. Analyzes the agent's prompt to understand conversation flow
+ * 2. Analyzes each test case to understand dependencies
+ * 3. Creates optimal batches with proper ordering
+ * 4. Ensures call-ending test cases are always last
  */
 router.post('/analyze-for-batching', async (req: Request, res: Response) => {
   try {
-    const { testCases } = req.body;
+    const { testCases, agentPrompt, agentFirstMessage } = req.body;
 
     if (!testCases || testCases.length === 0) {
       return res.status(400).json({
@@ -1055,43 +1065,105 @@ router.post('/analyze-for-batching', async (req: Request, res: Response) => {
       });
     }
 
-    console.log(`[Batching] Analyzing ${testCases.length} test cases for batching`);
+    console.log(`[IntelligentBatching] Analyzing ${testCases.length} test cases with AI...`);
 
-    // Group test cases by topic
-    const topicGroups = new Map<string, any[]>();
-    testCases.forEach((tc: any) => {
-      const topic = tc.key_topic || tc.keyTopic || 'General';
-      const group = topicGroups.get(topic) || [];
-      group.push(tc);
-      topicGroups.set(topic, group);
-    });
+    // Import the intelligent batching service
+    const { intelligentBatchingService } = await import('../services/intelligent-batching.service');
 
-    // Create batches - group compatible test cases
-    const batches: any[] = [];
-    const maxTestsPerBatch = 4;
-    
-    topicGroups.forEach((cases, topic) => {
-      // Split into batches of max 4 test cases
-      for (let i = 0; i < cases.length; i += maxTestsPerBatch) {
-        const batchCases = cases.slice(i, i + maxTestsPerBatch);
-        batches.push({
-          batchId: batches.length + 1,
-          testCaseIds: batchCases.map((tc: any) => tc.id),
-          reasoning: `Testing ${topic} scenarios together allows natural conversation flow`,
-          estimatedDuration: `${batchCases.length * 30}-${batchCases.length * 45} seconds`,
-        });
-      }
-    });
+    // Convert test cases to the format expected by the service
+    const testCasesForBatching = testCases.map((tc: any) => ({
+      id: tc.id || tc.name,
+      name: tc.name,
+      scenario: tc.scenario || tc.description,
+      userInput: tc.userInput || tc.scenario,
+      expectedBehavior: tc.expectedBehavior || tc.expectedOutcome,
+      expectedOutcome: tc.expectedOutcome || tc.expectedBehavior,
+      category: tc.category || tc.keyTopic || tc.key_topic,
+      keyTopic: tc.keyTopic || tc.key_topic,
+      priority: tc.priority,
+    }));
 
-    res.json({
-      success: true,
-      batches,
-      summary: {
-        totalBatches: batches.length,
-        totalTestCases: testCases.length,
-        estimatedTotalDuration: `${batches.length * 2}-${batches.length * 3} minutes`,
-      },
-    });
+    // If we have the agent prompt, use full intelligent batching
+    if (agentPrompt || agentFirstMessage) {
+      const result = await intelligentBatchingService.createIntelligentBatches(
+        agentPrompt || '',
+        agentFirstMessage || '',
+        testCasesForBatching,
+        {
+          maxTestsPerBatch: 5,
+          prioritizeCallEnding: true,
+        }
+      );
+
+      console.log(`[IntelligentBatching] Created ${result.batches.length} AI-optimized batches`);
+
+      res.json({
+        success: true,
+        batches: result.batches.map(b => ({
+          batchId: b.batchId,
+          name: b.name,
+          testCaseIds: b.testCaseOrder,
+          testCases: b.testCases,
+          reasoning: b.reasoning,
+          estimatedDuration: b.estimatedDuration,
+          conversationFlow: b.conversationFlow,
+          callEndingTestCase: b.callEndingTestCase,
+          fallbackPaths: b.fallbackPaths,
+          confidenceScore: b.batchConfidenceScore,
+          // Test mode info for cost optimization
+          testMode: b.testMode || 'voice',
+          testModeReason: b.testModeReason,
+          estimatedCostSavings: b.estimatedCostSavings,
+        })),
+        analysis: {
+          promptAnalysis: result.analysis.promptAnalysis,
+          testCaseAnalyses: result.analysis.testCaseAnalyses,
+        },
+        summary: result.summary,
+      });
+
+    } else {
+      // Fallback to simple batching if no prompt provided
+      console.log(`[Batching] No agent prompt provided, using simple topic-based batching`);
+      
+      // Group test cases by topic
+      const topicGroups = new Map<string, any[]>();
+      testCases.forEach((tc: any) => {
+        const topic = tc.key_topic || tc.keyTopic || 'General';
+        const group = topicGroups.get(topic) || [];
+        group.push(tc);
+        topicGroups.set(topic, group);
+      });
+
+      // Create batches - group compatible test cases
+      const batches: any[] = [];
+      const maxTestsPerBatch = 4;
+      
+      topicGroups.forEach((cases, topic) => {
+        // Split into batches of max 4 test cases
+        for (let i = 0; i < cases.length; i += maxTestsPerBatch) {
+          const batchCases = cases.slice(i, i + maxTestsPerBatch);
+          batches.push({
+            batchId: batches.length + 1,
+            testCaseIds: batchCases.map((tc: any) => tc.id),
+            testCases: batchCases,
+            reasoning: `Testing ${topic} scenarios together allows natural conversation flow`,
+            estimatedDuration: `${batchCases.length * 30}-${batchCases.length * 45} seconds`,
+          });
+        }
+      });
+
+      res.json({
+        success: true,
+        batches,
+        summary: {
+          totalBatches: batches.length,
+          totalTestCases: testCases.length,
+          estimatedTotalDuration: `${batches.length * 2}-${batches.length * 3} minutes`,
+          batchingStrategy: 'Simple topic-based batching (no agent prompt provided)',
+        },
+      });
+    }
 
   } catch (error) {
     console.error('Failed to analyze batching:', error);
@@ -1162,10 +1234,13 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       resolvedProvider = integrationResult.rows[0].provider;
     }
 
-    if (!resolvedProvider || !agentId || !apiKey || !batches || batches.length === 0) {
+    // Custom agents don't need an API key - they use our own LLM
+    const isCustomAgent = resolvedProvider === 'custom';
+
+    if (!resolvedProvider || !agentId || (!apiKey && !isCustomAgent) || !batches || batches.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: provider/integrationId, agentId, apiKey/integrationId, batches',
+        error: 'Missing required fields: provider/integrationId, agentId, apiKey/integrationId (except for custom agents), batches',
       });
     }
 
@@ -1227,19 +1302,20 @@ router.post('/start-batched', async (req: Request, res: Response) => {
       [testRunId, testRunName, 'running', userId, resolvedInternalAgentId, totalTestCases, new Date(), new Date()]
     );
 
-    // Insert all test cases as pending WITH their batch_id, batch_name, and batch_order
+    // Insert all test cases as pending WITH their batch_id, batch_name, batch_order, and test_mode
     // This allows the frontend to group them correctly and maintain execution order
     let batchOrder = 0;
     for (const batch of batches) {
       batchOrder++;
+      const testMode = (batch as any).testMode || 'voice';  // Get testMode from batch, default to voice
       for (const tc of batch.testCases) {
         const resultId = uuidv4();
         const testCaseId = tc.id.startsWith('tc-') ? uuidv4() : tc.id;
         await pool.query(
           `INSERT INTO test_results (
             id, test_run_id, test_case_id, scenario, user_input, expected_response, 
-            category, status, batch_id, batch_name, batch_order, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            category, status, batch_id, batch_name, batch_order, test_mode, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
           [
             resultId,
             testRunId,
@@ -1252,6 +1328,7 @@ router.post('/start-batched', async (req: Request, res: Response) => {
             batch.id,       // Include batch_id from the start
             batch.name,     // Include batch_name (category) for display
             batchOrder,     // Include batch_order to preserve execution sequence
+            testMode,       // Include test_mode (voice or chat)
             new Date(),
           ]
         );
@@ -1321,13 +1398,14 @@ router.post('/start-batched', async (req: Request, res: Response) => {
 });
 
 /**
- * Execute batched voice calls
- * Each batch is a single call with multiple test scenarios
+ * Execute batched voice/chat calls
+ * Each batch is a single call/chat with multiple test scenarios
  * Supports concurrency for parallel execution
+ * Routes to voice or chat based on testMode
  */
 async function executeBatchedCalls(
   testRunId: string,
-  batches: Array<{ id: string; name: string; testCases: Array<{ id: string; name: string; scenario: string; expectedOutcome: string; category: string }> }>,
+  batches: Array<{ id: string; name: string; testMode?: 'voice' | 'chat'; testCases: Array<{ id: string; name: string; scenario: string; expectedOutcome: string; category: string }> }>,
   agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
   enableBatching: boolean,
   enableConcurrency: boolean = false,
@@ -1353,11 +1431,16 @@ async function executeBatchedCalls(
         );
       }
       
-      // Execute the batch (single call with multiple test cases)
+      // Execute the batch (single call/chat with multiple test cases)
+      // Route to voice or chat based on testMode
+      const testMode = batch.testMode || 'voice';
+      console.log(`[BatchedExecution] Batch ${batch.id} testMode: ${testMode}`);
+      
       const executionResult = await batchedTestExecutor.executeBatch(
         {
           id: batch.id,
           name: batch.name,
+          testMode: testMode,  // Pass testMode for voice/chat routing
           testCaseIds: batch.testCases.map(tc => tc.id),
           testCases: batch.testCases.map(tc => ({
             id: tc.id,
@@ -1507,6 +1590,15 @@ async function executeBatchedCalls(
   );
   
   console.log(`[BatchedExecution] Completed all batches for ${testRunId}`);
+
+  // Send email notifications for failed tests
+  emailNotificationService.checkAndNotifyTestRunFailures(testRunId)
+    .then(sent => {
+      if (sent) {
+        console.log(`[BatchedExecution] Failure notification sent for test run ${testRunId}`);
+      }
+    })
+    .catch(err => console.error('[BatchedExecution] Failed to send notification:', err));
 }
 
 /**
@@ -1671,6 +1763,15 @@ async function executeBatchedTestRun(
   );
   
   console.log(`[BatchedExecutor] Completed batched execution for ${testRunId}`);
+
+  // Send email notifications for failed tests
+  emailNotificationService.checkAndNotifyTestRunFailures(testRunId)
+    .then(sent => {
+      if (sent) {
+        console.log(`[BatchedExecutor] Failure notification sent for test run ${testRunId}`);
+      }
+    })
+    .catch(err => console.error('[BatchedExecutor] Failed to send notification:', err));
 }
 
 /**

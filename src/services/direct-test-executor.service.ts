@@ -10,6 +10,7 @@ import pool from '../db';
 import { TTSService, TTSRequest, TTSResponse } from './tts.service';
 import { ASRService, TranscriptionRequest, TranscriptionResponse } from './asr.service';
 import { ElevenLabsCaller, RetellCaller, VAPICaller, createCaller } from './voice-caller.service';
+import { emailNotificationService } from './emailNotification.service';
 
 // Test case interface
 export interface TestCase {
@@ -189,6 +190,17 @@ export class DirectTestExecutorService {
     );
 
     console.log(`[DirectExecutor] Test run ${testRunId} completed: ${passedCount} passed, ${failedCount} failed`);
+
+    // Send email notifications for failed tests
+    if (failedCount > 0) {
+      emailNotificationService.checkAndNotifyTestRunFailures(testRunId)
+        .then(sent => {
+          if (sent) {
+            console.log(`[DirectExecutor] Failure notification sent for test run ${testRunId}`);
+          }
+        })
+        .catch(err => console.error('[DirectExecutor] Failed to send notification:', err));
+    }
 
     return {
       testRunId,

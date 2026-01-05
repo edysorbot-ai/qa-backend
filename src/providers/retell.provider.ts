@@ -47,8 +47,55 @@ interface RetellAgent {
   response_engine?: {
     type: string;
     llm_id?: string;
+    workflow_id?: string;
+    conversation_flow_id?: string;
     version?: number;
   };
+  last_modification_timestamp?: number;
+}
+
+// Retell Workflow (Conversation Flow) structure - for retell-llm-workflow type
+interface RetellWorkflow {
+  workflow_id: string;
+  name?: string;
+  global_prompt?: string;
+  nodes?: Array<{
+    node_id: string;
+    name: string;
+    prompt?: string;
+    type?: string;
+  }>;
+  edges?: Array<{
+    from_node_id: string;
+    to_node_id: string;
+    condition?: string;
+  }>;
+  version?: number;
+  last_modification_timestamp?: number;
+}
+
+// Retell Conversation Flow structure - for conversation-flow type (newer API)
+interface RetellConversationFlow {
+  conversation_flow_id: string;
+  name?: string;
+  nodes?: Array<{
+    id: string;
+    name?: string;
+    type: string;
+    content?: {
+      text?: string;
+      prompt?: string;
+    };
+    data?: any;
+  }>;
+  edges?: Array<{
+    source: string;
+    target: string;
+    condition?: string;
+  }>;
+  global_prompt?: string;
+  starting_node_id?: string;
+  version?: number;
   last_modification_timestamp?: number;
 }
 
@@ -144,24 +191,207 @@ export class RetellProvider implements VoiceProviderClient {
         `/get-agent/${agentId}`
       );
 
-      // Also try to get the LLM details if available
+      console.log(`[Retell] Agent response for ${agentId}:`, JSON.stringify(agent, null, 2));
+      console.log(`[Retell] Response engine type: ${agent.response_engine?.type}`);
+
+      // Variables to store prompt information
       let llmDetails: RetellLLM | null = null;
-      if (agent.response_engine?.llm_id) {
+      let workflowDetails: RetellWorkflow | null = null;
+      let fullPrompt: string | undefined;
+      let statePrompts: Array<{ name: string; prompt: string }> | undefined;
+
+      const responseEngineType = agent.response_engine?.type;
+
+      // Handle different response engine types
+      if (responseEngineType === 'retell-llm' && agent.response_engine?.llm_id) {
+        // Standard LLM-based agent
+        console.log(`[Retell] Fetching LLM details for llm_id: ${agent.response_engine.llm_id}`);
         try {
           llmDetails = await this.request<RetellLLM>(
             apiKey,
             `/get-retell-llm/${agent.response_engine.llm_id}`
           );
+          console.log(`[Retell] LLM details:`, JSON.stringify(llmDetails, null, 2));
+          fullPrompt = llmDetails?.general_prompt;
+          
+          // Extract state prompts if available (multi-prompt agent)
+          if (llmDetails?.states && Array.isArray(llmDetails.states)) {
+            statePrompts = llmDetails.states.map((state: any) => ({
+              name: state.name,
+              prompt: state.state_prompt || '',
+            }));
+          }
         } catch (e) {
-          // LLM might not exist or be accessible
+          console.error('[Retell] Error fetching LLM details:', e);
+        }
+      } else if (responseEngineType === 'retell-llm-workflow' && agent.response_engine?.workflow_id) {
+        // Workflow/Conversation Flow based agent (Flex Mode)
+        console.log(`[Retell] Fetching workflow details for workflow_id: ${agent.response_engine.workflow_id}`);
+        try {
+          workflowDetails = await this.request<RetellWorkflow>(
+            apiKey,
+            `/get-retell-llm-workflow/${agent.response_engine.workflow_id}`
+          );
+          console.log(`[Retell] Workflow details:`, JSON.stringify(workflowDetails, null, 2));
+          fullPrompt = workflowDetails?.global_prompt;
+          
+          // Extract node prompts
+          if (workflowDetails?.nodes && Array.isArray(workflowDetails.nodes)) {
+            statePrompts = workflowDetails.nodes
+              .filter((node: any) => node.prompt)
+              .map((node: any) => ({
+                name: node.name || node.node_id,
+                prompt: node.prompt || '',
+              }));
+          }
+        } catch (e) {
+          console.error('[Retell] Error fetching workflow details:', e);
+          // Workflow API might not be available - try to get LLM directly
+          if (agent.response_engine?.llm_id) {
+            try {
+              llmDetails = await this.request<RetellLLM>(
+                apiKey,
+                `/get-retell-llm/${agent.response_engine.llm_id}`
+              );
+              fullPrompt = llmDetails?.general_prompt;
+            } catch (e2) {
+              console.error('[Retell] Fallback LLM fetch also failed:', e2);
+            }
+          }
+        }
+      } else if (agent.response_engine?.llm_id) {
+        // Fallback: any response engine with llm_id
+        console.log(`[Retell] Fallback: Fetching LLM for unknown type ${responseEngineType}, llm_id: ${agent.response_engine.llm_id}`);
+        try {
+          llmDetails = await this.request<RetellLLM>(
+            apiKey,
+            `/get-retell-llm/${agent.response_engine.llm_id}`
+          );
+          console.log(`[Retell] Fallback LLM details:`, JSON.stringify(llmDetails, null, 2));
+          fullPrompt = llmDetails?.general_prompt;
+          
+          if (llmDetails?.states && Array.isArray(llmDetails.states)) {
+            statePrompts = llmDetails.states.map((state: any) => ({
+              name: state.name,
+              prompt: state.state_prompt || '',
+            }));
+          }
+        } catch (e) {
+          console.error('[Retell] Error fetching fallback LLM:', e);
+        }
+      } else if (responseEngineType === 'conversation-flow' && agent.response_engine?.conversation_flow_id) {
+        // Conversation Flow based agent (newer API - version 2)
+        const conversationFlowId = agent.response_engine.conversation_flow_id;
+        console.log(`[Retell] Fetching conversation flow details for conversation_flow_id: ${conversationFlowId}`);
+        try {
+          const conversationFlow = await this.request<RetellConversationFlow>(
+            apiKey,
+            `/get-conversation-flow/${conversationFlowId}`
+          );
+          console.log(`[Retell] Conversation flow details:`, JSON.stringify(conversationFlow, null, 2));
+          
+          // Extract global prompt
+          fullPrompt = conversationFlow?.global_prompt || '';
+          
+          // Extract node prompts/content
+          if (conversationFlow?.nodes && Array.isArray(conversationFlow.nodes)) {
+            statePrompts = conversationFlow.nodes
+              .filter((node: any) => node.content?.prompt || node.content?.text || node.data?.prompt)
+              .map((node: any) => ({
+                name: node.name || node.id || node.type,
+                prompt: node.content?.prompt || node.content?.text || node.data?.prompt || '',
+              }));
+          }
+        } catch (e) {
+          console.error('[Retell] Error fetching conversation flow details:', e);
+          // Try alternative endpoint
+          try {
+            console.log(`[Retell] Trying alternative conversation flow endpoint...`);
+            const conversationFlow = await this.request<RetellConversationFlow>(
+              apiKey,
+              `/conversation-flow/${conversationFlowId}`
+            );
+            fullPrompt = conversationFlow?.global_prompt || '';
+            if (conversationFlow?.nodes && Array.isArray(conversationFlow.nodes)) {
+              statePrompts = conversationFlow.nodes
+                .filter((node: any) => node.content?.prompt || node.content?.text || node.data?.prompt)
+                .map((node: any) => ({
+                  name: node.name || node.id || node.type,
+                  prompt: node.content?.prompt || node.content?.text || node.data?.prompt || '',
+                }));
+            }
+          } catch (e2) {
+            console.error('[Retell] Alternative conversation flow fetch also failed:', e2);
+            
+            // If we can't fetch the flow, try to construct a meaningful description from post_call_analysis_data
+            if (agent.post_call_analysis_data && agent.post_call_analysis_data.length > 0) {
+              console.log(`[Retell] Using post_call_analysis_data to construct prompt context`);
+              const questions = agent.post_call_analysis_data
+                .filter((item: any) => item.name && item.type !== 'number')
+                .map((item: any) => {
+                  let description = `Question: ${item.name}`;
+                  if (item.choices && Array.isArray(item.choices)) {
+                    description += `\nOptions: ${item.choices.join(', ')}`;
+                  }
+                  return description;
+                });
+              
+              if (questions.length > 0) {
+                fullPrompt = `This is a patient screening voice agent. The agent asks the following questions:\n\n${questions.join('\n\n')}`;
+                statePrompts = agent.post_call_analysis_data
+                  .filter((item: any) => item.name)
+                  .map((item: any) => ({
+                    name: item.name,
+                    prompt: item.choices ? `Options: ${item.choices.join(', ')}` : item.description || '',
+                  }));
+              }
+            }
+          }
+        }
+      } else {
+        console.log(`[Retell] No LLM or workflow ID found. Response engine:`, JSON.stringify(agent.response_engine, null, 2));
+        
+        // If we have post_call_analysis_data but no prompt source, construct from that
+        if (agent.post_call_analysis_data && agent.post_call_analysis_data.length > 0) {
+          console.log(`[Retell] Constructing prompt context from post_call_analysis_data`);
+          const questions = agent.post_call_analysis_data
+            .filter((item: any) => item.name && item.type !== 'number')
+            .map((item: any) => {
+              let description = `Question: ${item.name}`;
+              if (item.choices && Array.isArray(item.choices)) {
+                description += `\nOptions: ${item.choices.join(', ')}`;
+              }
+              return description;
+            });
+          
+          if (questions.length > 0) {
+            fullPrompt = `Voice agent screening questions:\n\n${questions.join('\n\n')}`;
+            statePrompts = agent.post_call_analysis_data
+              .filter((item: any) => item.name)
+              .map((item: any) => ({
+                name: item.name,
+                prompt: item.choices ? `Options: ${item.choices.join(', ')}` : item.description || '',
+              }));
+          }
         }
       }
+
+      // Build combined prompt from all sources
+      let combinedPrompt = fullPrompt || '';
+      if (statePrompts && statePrompts.length > 0) {
+        combinedPrompt += '\n\n--- State/Node Prompts ---\n';
+        statePrompts.forEach((sp) => {
+          combinedPrompt += `\n[${sp.name}]\n${sp.prompt}\n`;
+        });
+      }
+
+      console.log(`[Retell] Final prompt length: ${combinedPrompt.length} chars`);
 
       return {
         id: agent.agent_id,
         name: agent.agent_name,
         provider: 'retell',
-        description: llmDetails?.general_prompt?.substring(0, 200),
+        description: (fullPrompt || combinedPrompt)?.substring(0, 200),
         voice: agent.voice_id,
         language: agent.language,
         metadata: {
@@ -169,11 +399,17 @@ export class RetellProvider implements VoiceProviderClient {
           voiceSpeed: agent.voice_speed,
           responsiveness: agent.responsiveness,
           webhookUrl: agent.webhook_url,
+          responseEngineType: responseEngineType,
           llmId: agent.response_engine?.llm_id,
+          workflowId: agent.response_engine?.workflow_id,
+          conversationFlowId: agent.response_engine?.conversation_flow_id,
           llmModel: llmDetails?.model,
           beginMessage: llmDetails?.begin_message,
-          fullPrompt: llmDetails?.general_prompt,
+          fullPrompt: combinedPrompt || fullPrompt,
+          statePrompts: statePrompts,
           tools: llmDetails?.general_tools,
+          states: llmDetails?.states,
+          startingState: llmDetails?.starting_state,
         },
       };
     } catch (error) {
@@ -321,6 +557,69 @@ export class RetellProvider implements VoiceProviderClient {
    */
   getWebSocketUrl(callId: string, enableUpdate: boolean = true): string {
     return `wss://api.retellai.com/audio-websocket/${callId}?enable_update=${enableUpdate}`;
+  }
+
+  /**
+   * Check if this provider supports chat-based testing
+   * 
+   * RETELL LIMITATION: Retell does NOT provide a public API for chat-based testing of voice agents.
+   * Their testing options are:
+   * 1. Dashboard LLM Playground (manual, no API)
+   * 2. Dashboard Batch Test (predefined cases, no public API)
+   * 3. Actual calls (Web Call / Phone Call API)
+   * 
+   * For Retell, use voice-based testing (Web Call) instead.
+   */
+  supportsChatTesting(): boolean {
+    return false;
+  }
+
+  /**
+   * Chat method - NOT SUPPORTED for Retell voice agents
+   * 
+   * Retell does not expose a public API for text-based interaction with voice agents.
+   * Use voice-based testing (Web Call API) instead.
+   * 
+   * @returns null - chat testing not available
+   */
+  async chat(
+    apiKey: string,
+    agentId: string,
+    message: string,
+    options: {
+      sessionId?: string;
+      previousChatId?: string;
+    } = {}
+  ): Promise<{
+    id: string;
+    output: Array<{ role: string; message: string }>;
+    messages: Array<{ role: string; message: string }>;
+    sessionId?: string;
+    rawResponse?: any;
+  } | null> {
+    console.log(`[Retell Chat] Chat-based testing is NOT SUPPORTED for Retell voice agents.`);
+    console.log(`[Retell Chat] Retell does not provide a public API for text-based interaction.`);
+    console.log(`[Retell Chat] Please use voice-based testing (Web Call) for Retell agents.`);
+    return null;
+  }
+
+  /**
+   * Run a multi-turn chat conversation - NOT SUPPORTED for Retell
+   */
+  async runChatConversation(
+    apiKey: string,
+    agentId: string,
+    userMessages: string[]
+  ): Promise<{
+    success: boolean;
+    transcript: Array<{ role: string; content: string; timestamp: number }>;
+    error?: string;
+  }> {
+    return {
+      success: false,
+      transcript: [],
+      error: 'Chat-based testing is not supported for Retell voice agents. Please use voice-based testing.',
+    };
   }
 }
 

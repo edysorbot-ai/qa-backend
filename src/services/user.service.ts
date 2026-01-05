@@ -1,5 +1,6 @@
 import { query } from '../db';
 import { User, CreateUserDTO, UpdateUserDTO } from '../models/user.model';
+import { clerkClient } from '@clerk/express';
 
 export class UserService {
   async findByClerkId(clerkId: string): Promise<User | null> {
@@ -99,13 +100,29 @@ export class UserService {
       return existing;
     }
 
-    // Create a minimal user record - can be enriched later via webhook
+    // Fetch user details from Clerk to get correct email
+    let email = `${clerkId}@placeholder.com`;
+    let firstName: string | undefined;
+    let lastName: string | undefined;
+    let imageUrl: string | undefined;
+
+    try {
+      const clerkUser = await clerkClient.users.getUser(clerkId);
+      email = clerkUser.emailAddresses?.[0]?.emailAddress || email;
+      firstName = clerkUser.firstName || undefined;
+      lastName = clerkUser.lastName || undefined;
+      imageUrl = clerkUser.imageUrl || undefined;
+    } catch (error) {
+      console.error('[UserService] Failed to fetch user from Clerk:', error);
+    }
+
+    // Create user record with correct email
     return this.create({
       clerk_id: clerkId,
-      email: `${clerkId}@placeholder.com`, // Will be updated via webhook or sync
-      first_name: undefined,
-      last_name: undefined,
-      image_url: undefined,
+      email,
+      first_name: firstName,
+      last_name: lastName,
+      image_url: imageUrl,
     });
   }
 

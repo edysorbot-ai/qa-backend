@@ -10,3 +10,5 @@ export * from './workflow-test-executor.service';
 export { realTestExecutor, type TestResult } from './real-test-executor.service';
 export { conversationalTestAgent } from './conversational-test-agent.service';
 export { promptSuggestionService } from './prompt-suggestion.service';
+export { intelligentBatchingService, type IntelligentBatch, type BatchingResult } from './intelligent-batching.service';
+export { teamMemberService } from './teamMember.service';
