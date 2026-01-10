@@ -58,6 +58,66 @@ async function checkTeamMemberLimit(userId: string): Promise<{ allowed: boolean;
 }
 
 /**
+ * Assign owner's package and credits to a team member
+ * Team members share the same package as their owner
+ */
+async function assignOwnerPackageToTeamMember(ownerUserId: string, teamMemberEmail: string): Promise<void> {
+  try {
+    // Get owner's package and credits info
+    const ownerCredits = await pool.query(`
+      SELECT uc.*, cp.name as package_name
+      FROM user_credits uc
+      JOIN credit_packages cp ON uc.package_id = cp.id
+      WHERE uc.user_id = $1
+    `, [ownerUserId]);
+
+    if (!ownerCredits.rows[0]) {
+      console.log('[TeamMember] Owner has no package assigned, skipping team member package assignment');
+      return;
+    }
+
+    const ownerPackage = ownerCredits.rows[0];
+
+    // Get team member's user ID (they were just created in Clerk and our system)
+    const teamMemberResult = await pool.query(`
+      SELECT u.id FROM users u
+      WHERE u.email = $1
+    `, [teamMemberEmail]);
+
+    if (!teamMemberResult.rows[0]) {
+      console.log('[TeamMember] Team member user not found, will be assigned package on first login');
+      return;
+    }
+
+    const teamMemberUserId = teamMemberResult.rows[0].id;
+
+    // Check if team member already has credits record
+    const existingCredits = await pool.query(
+      `SELECT id FROM user_credits WHERE user_id = $1`,
+      [teamMemberUserId]
+    );
+
+    if (existingCredits.rows.length === 0) {
+      // Create user_credits record with owner's package (sharing same credits/limits)
+      await pool.query(`
+        INSERT INTO user_credits (user_id, package_id, current_credits, total_credits_purchased, package_expires_at)
+        VALUES ($1, $2, $3, $4, $5)
+      `, [
+        teamMemberUserId,
+        ownerPackage.package_id,
+        ownerPackage.current_credits,  // Share same credits
+        ownerPackage.total_credits_purchased,
+        ownerPackage.package_expires_at
+      ]);
+      console.log(`[TeamMember] Assigned owner's package "${ownerPackage.package_name}" to team member ${teamMemberEmail}`);
+    }
+  } catch (error) {
+    console.error('[TeamMember] Failed to assign owner package to team member:', error);
+    // Don't fail team member creation if package assignment fails
+  }
+}
+
+/**
  * GET /api/team-members
  * Get all team members for the current user
  */
@@ -185,6 +245,9 @@ router.post('/',
 
     // Update with clerk_id
     await teamMemberService.updateClerkId(email, clerkUser.id);
+    
+    // Assign owner's package and credits to team member
+    await assignOwnerPackageToTeamMember(userId, email.toLowerCase());
 
     // Add team member email to owner's alert settings
     await alertSettingsService.addTeamMemberEmail(userId, email, name);

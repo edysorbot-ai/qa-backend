@@ -34,7 +34,46 @@ export class UserService {
        RETURNING *`,
       [data.clerk_id, data.email, data.first_name, data.last_name, data.image_url]
     );
-    return result.rows[0];
+    
+    const user = result.rows[0];
+    
+    // Assign default package to new user
+    await this.assignDefaultPackage(user.id);
+    
+    return user;
+  }
+  
+  // Assign the default package to a new user
+  async assignDefaultPackage(userId: string): Promise<void> {
+    try {
+      const { AdminModel } = await import('../models/admin.model');
+      const defaultPackage = await AdminModel.getDefaultPackage();
+      
+      if (defaultPackage) {
+        // Calculate expiry date
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + defaultPackage.validity_days);
+        
+        // Check if user already has credits record
+        const existing = await query(
+          `SELECT id FROM user_credits WHERE user_id = $1`,
+          [userId]
+        );
+        
+        if (existing.rows.length === 0) {
+          // Create user_credits record with default package
+          await query(
+            `INSERT INTO user_credits (user_id, package_id, current_credits, total_credits_purchased, package_expires_at)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [userId, defaultPackage.id, defaultPackage.credits, defaultPackage.credits, expiresAt]
+          );
+          console.log(`[UserService] Assigned default package "${defaultPackage.name}" to user ${userId}`);
+        }
+      }
+    } catch (error) {
+      console.error('[UserService] Failed to assign default package:', error);
+      // Don't fail user creation if package assignment fails
+    }
   }
 
   async update(id: string, data: UpdateUserDTO): Promise<User | null> {

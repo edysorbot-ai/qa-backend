@@ -28,6 +28,7 @@ export async function up(): Promise<void> {
       price_usd DECIMAL(10, 2) NOT NULL DEFAULT 0,
       is_unlimited BOOLEAN DEFAULT false,
       is_active BOOLEAN DEFAULT true,
+      is_default BOOLEAN DEFAULT false,
       validity_days INTEGER DEFAULT 30,
       features JSONB DEFAULT '{}',
       max_team_members INTEGER DEFAULT 1,
@@ -340,6 +341,20 @@ export async function up(): Promise<void> {
       ON CONFLICT (name) DO NOTHING
     `, [pkg.name, pkg.description, pkg.credits, pkg.price_usd, pkg.is_unlimited, pkg.validity_days, pkg.max_team_members, JSON.stringify(pkg.features)]);
   }
+
+  // Add is_default column if it doesn't exist (for existing databases)
+  await pool.query(`
+    ALTER TABLE credit_packages 
+    ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT false
+  `);
+
+  // Set Free Trial as default package if no default is set
+  await pool.query(`
+    UPDATE credit_packages 
+    SET is_default = true 
+    WHERE name = 'Free Trial' 
+    AND NOT EXISTS (SELECT 1 FROM credit_packages WHERE is_default = true)
+  `);
 
   console.log("Migration 017_create_admin_system completed");
 }

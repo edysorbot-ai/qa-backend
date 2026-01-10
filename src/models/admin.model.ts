@@ -29,6 +29,7 @@ export interface CreditPackage {
   price_usd: number;
   is_unlimited: boolean;
   is_active: boolean;
+  is_default: boolean;
   validity_days: number;
   features: Record<string, any>;
   max_team_members: number;
@@ -206,21 +207,31 @@ export const AdminModel = {
   },
 
   async createPackage(data: Omit<CreditPackage, "id" | "created_at">): Promise<CreditPackage> {
+    // If this package is being set as default, unset any existing default
+    if (data.is_default) {
+      await pool.query(`UPDATE credit_packages SET is_default = false WHERE is_default = true`);
+    }
+    
     const result = await pool.query(
-      `INSERT INTO credit_packages (name, description, credits, price_usd, is_unlimited, is_active, validity_days, features, max_team_members)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO credit_packages (name, description, credits, price_usd, is_unlimited, is_active, is_default, validity_days, features, max_team_members)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [data.name, data.description, data.credits, data.price_usd, data.is_unlimited, data.is_active, data.validity_days, JSON.stringify(data.features), data.max_team_members]
+      [data.name, data.description, data.credits, data.price_usd, data.is_unlimited, data.is_active, data.is_default || false, data.validity_days, JSON.stringify(data.features), data.max_team_members]
     );
     return result.rows[0];
   },
 
   async updatePackage(id: string, data: Partial<CreditPackage>): Promise<CreditPackage | null> {
+    // If this package is being set as default, unset any existing default
+    if (data.is_default) {
+      await pool.query(`UPDATE credit_packages SET is_default = false WHERE is_default = true AND id != $1`, [id]);
+    }
+    
     const updates: string[] = [];
     const values: any[] = [];
     let paramCount = 1;
 
-    const fields = ['name', 'description', 'credits', 'price_usd', 'is_unlimited', 'is_active', 'validity_days', 'max_team_members'];
+    const fields = ['name', 'description', 'credits', 'price_usd', 'is_unlimited', 'is_active', 'is_default', 'validity_days', 'max_team_members'];
     
     for (const field of fields) {
       if ((data as any)[field] !== undefined) {
@@ -250,6 +261,14 @@ export const AdminModel = {
   async deletePackage(id: string): Promise<boolean> {
     const result = await pool.query(`DELETE FROM credit_packages WHERE id = $1`, [id]);
     return (result.rowCount ?? 0) > 0;
+  },
+  
+  // Get the default package for new users
+  async getDefaultPackage(): Promise<CreditPackage | null> {
+    const result = await pool.query(
+      `SELECT * FROM credit_packages WHERE is_default = true AND is_active = true LIMIT 1`
+    );
+    return result.rows[0] || null;
   },
 
   // Feature Credit Costs
