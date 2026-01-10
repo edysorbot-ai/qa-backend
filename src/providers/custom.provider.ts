@@ -2,14 +2,13 @@
  * Custom Agent Provider
  * 
  * This provider handles custom agents created in the Agent Builder.
- * It uses our own LLM, TTS, and STT services to simulate voice conversations.
+ * It uses OpenRouter for LLM access, giving users access to many models.
  * 
  * Custom agents don't have external API integrations - they run entirely
  * on our platform using configurable LLM models and voice services.
  */
 
 import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
 import {
   VoiceProviderClient,
   ProviderValidationResult,
@@ -48,7 +47,7 @@ export interface CustomAgentConfig {
   systemPrompt: string;
   startingMessage?: string;
   llmModel: string;
-  llmProvider: 'openai' | 'anthropic';
+  llmProvider: string; // Now accepts 'openrouter' or specific provider names
   temperature: number;
   maxTokens: number;
   voice?: string;
@@ -57,34 +56,142 @@ export interface CustomAgentConfig {
   language?: string;
 }
 
+// OpenRouter model info interface
+export interface OpenRouterModel {
+  id: string;
+  name: string;
+  description?: string;
+  context_length: number;
+  pricing: {
+    prompt: string;
+    completion: string;
+  };
+  top_provider?: {
+    max_completion_tokens?: number;
+  };
+  architecture?: {
+    modality?: string;
+    tokenizer?: string;
+  };
+}
+
 export class CustomProvider implements VoiceProviderClient {
-  private openai: OpenAI | null = null;
-  private anthropic: Anthropic | null = null;
+  private openrouterClient: OpenAI | null = null;
+  private openaiClient: OpenAI | null = null;
 
   constructor() {
-    // Initialize clients if API keys are available
+    // Initialize OpenRouter client (primary)
+    if (process.env.OPENROUTER_API_KEY) {
+      this.openrouterClient = new OpenAI({
+        baseURL: 'https://openrouter.ai/api/v1',
+        apiKey: process.env.OPENROUTER_API_KEY,
+        defaultHeaders: {
+          'HTTP-Referer': process.env.FRONTEND_URL || 'http://localhost:3000',
+          'X-Title': 'Voice QA Platform',
+        },
+      });
+    }
+    // Fallback to direct OpenAI if no OpenRouter key
     if (process.env.OPENAI_API_KEY) {
-      this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      this.openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     }
-    if (process.env.ANTHROPIC_API_KEY) {
-      this.anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+
+  /**
+   * Fetch available models from OpenRouter
+   */
+  async getAvailableModels(): Promise<OpenRouterModel[]> {
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/models', {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        },
+      });
+
+      if (!response.ok) {
+        console.error('[Custom] Failed to fetch OpenRouter models:', response.statusText);
+        return this.getDefaultModels();
+      }
+
+      const data = await response.json() as { data: OpenRouterModel[] };
+      
+      // Filter to only include chat/text models, exclude image/audio models
+      const chatModels = (data.data || []).filter((model: OpenRouterModel) => {
+        const modality = model.architecture?.modality || '';
+        // Include text-only models
+        return modality.includes('text') || !modality;
+      });
+
+      // Sort by name for better UX
+      return chatModels.sort((a: OpenRouterModel, b: OpenRouterModel) => 
+        a.name.localeCompare(b.name)
+      );
+    } catch (error) {
+      console.error('[Custom] Error fetching OpenRouter models:', error);
+      return this.getDefaultModels();
     }
+  }
+
+  /**
+   * Get default models as fallback
+   */
+  private getDefaultModels(): OpenRouterModel[] {
+    return [
+      { id: 'openai/gpt-4o', name: 'GPT-4o', description: 'Most capable, best for complex tasks', context_length: 128000, pricing: { prompt: '0.0025', completion: '0.01' } },
+      { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', description: 'Fast and cost-effective', context_length: 128000, pricing: { prompt: '0.00015', completion: '0.0006' } },
+      { id: 'openai/gpt-4-turbo', name: 'GPT-4 Turbo', description: 'Balanced performance', context_length: 128000, pricing: { prompt: '0.01', completion: '0.03' } },
+      { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', description: 'Excellent reasoning', context_length: 200000, pricing: { prompt: '0.003', completion: '0.015' } },
+      { id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku', description: 'Fast and efficient', context_length: 200000, pricing: { prompt: '0.00025', completion: '0.00125' } },
+      { id: 'google/gemini-pro-1.5', name: 'Gemini Pro 1.5', description: 'Google\'s latest model', context_length: 1000000, pricing: { prompt: '0.00125', completion: '0.005' } },
+      { id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B', description: 'Open source, powerful', context_length: 131072, pricing: { prompt: '0.00035', completion: '0.0004' } },
+      { id: 'mistralai/mistral-large', name: 'Mistral Large', description: 'Strong reasoning capabilities', context_length: 128000, pricing: { prompt: '0.002', completion: '0.006' } },
+    ];
+  }
+
+  /**
+   * Get available TTS voices
+   * Returns a static list of common voice options
+   */
+  async getAvailableVoices(): Promise<{ id: string; name: string; language?: string; gender?: string }[]> {
+    // For custom agents, we'll use ElevenLabs or browser TTS
+    // This is a static list of common voice IDs
+    return [
+      { id: 'alloy', name: 'Alloy', language: 'en', gender: 'neutral' },
+      { id: 'echo', name: 'Echo', language: 'en', gender: 'male' },
+      { id: 'fable', name: 'Fable', language: 'en', gender: 'male' },
+      { id: 'onyx', name: 'Onyx', language: 'en', gender: 'male' },
+      { id: 'nova', name: 'Nova', language: 'en', gender: 'female' },
+      { id: 'shimmer', name: 'Shimmer', language: 'en', gender: 'female' },
+      // More natural voices
+      { id: 'rachel', name: 'Rachel', language: 'en', gender: 'female' },
+      { id: 'drew', name: 'Drew', language: 'en', gender: 'male' },
+      { id: 'clyde', name: 'Clyde', language: 'en', gender: 'male' },
+      { id: 'paul', name: 'Paul', language: 'en', gender: 'male' },
+      { id: 'domi', name: 'Domi', language: 'en', gender: 'female' },
+      { id: 'bella', name: 'Bella', language: 'en', gender: 'female' },
+      { id: 'antoni', name: 'Antoni', language: 'en', gender: 'male' },
+      { id: 'josh', name: 'Josh', language: 'en', gender: 'male' },
+      { id: 'arnold', name: 'Arnold', language: 'en', gender: 'male' },
+      { id: 'adam', name: 'Adam', language: 'en', gender: 'male' },
+      { id: 'sam', name: 'Sam', language: 'en', gender: 'male' },
+      { id: 'nicole', name: 'Nicole', language: 'en', gender: 'female' },
+      { id: 'glinda', name: 'Glinda', language: 'en', gender: 'female' },
+    ];
   }
 
   /**
    * Validate that we have the necessary API keys configured
    */
   async validateApiKey(apiKey: string): Promise<ProviderValidationResult> {
-    // For custom agents, we validate that the platform has the required services configured
+    const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
     const hasOpenAI = !!process.env.OPENAI_API_KEY;
-    const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
     const hasDeepgram = !!process.env.DEEPGRAM_API_KEY;
     const hasElevenLabs = !!process.env.ELEVENLABS_API_KEY;
 
-    if (!hasOpenAI && !hasAnthropic) {
+    if (!hasOpenRouter && !hasOpenAI) {
       return {
         valid: false,
-        message: 'No LLM provider configured. Please set OPENAI_API_KEY or ANTHROPIC_API_KEY.',
+        message: 'No LLM provider configured. Please set OPENROUTER_API_KEY or OPENAI_API_KEY.',
       };
     }
 
@@ -92,8 +199,8 @@ export class CustomProvider implements VoiceProviderClient {
       valid: true,
       message: 'Custom agent services are available',
       details: {
+        openrouterAvailable: hasOpenRouter,
         openaiAvailable: hasOpenAI,
-        anthropicAvailable: hasAnthropic,
         sttAvailable: hasDeepgram,
         ttsAvailable: hasElevenLabs,
         plan: 'Custom Agent',
@@ -187,16 +294,8 @@ export class CustomProvider implements VoiceProviderClient {
       // Add user message
       session.messages.push({ role: 'user', content: message });
 
-      // Generate response based on provider
-      let responseText: string;
-      
-      if (config.llmProvider === 'anthropic' && this.anthropic) {
-        responseText = await this.generateAnthropicResponse(session.messages, config);
-      } else if (this.openai) {
-        responseText = await this.generateOpenAIResponse(session.messages, config);
-      } else {
-        throw new Error('No LLM provider available');
-      }
+      // Generate response using OpenRouter (primary) or OpenAI (fallback)
+      const responseText = await this.generateLLMResponse(session.messages, config);
 
       // Add assistant response to history
       session.messages.push({ role: 'assistant', content: responseText });
@@ -211,6 +310,77 @@ export class CustomProvider implements VoiceProviderClient {
       console.error('[Custom] Chat error:', error);
       return null;
     }
+  }
+
+  /**
+   * Generate LLM response using OpenRouter or fallback to direct OpenAI
+   */
+  private async generateLLMResponse(
+    messages: ConversationMessage[],
+    config: CustomAgentConfig
+  ): Promise<string> {
+    // Use OpenRouter if available (supports all models)
+    if (this.openrouterClient) {
+      return this.generateOpenRouterResponse(messages, config);
+    }
+    
+    // Fallback to direct OpenAI for OpenAI models only
+    if (this.openaiClient && config.llmModel.startsWith('openai/')) {
+      return this.generateDirectOpenAIResponse(messages, config);
+    }
+
+    throw new Error('No LLM provider available. Please configure OPENROUTER_API_KEY.');
+  }
+
+  /**
+   * Generate response using OpenRouter (supports all models)
+   */
+  private async generateOpenRouterResponse(
+    messages: ConversationMessage[],
+    config: CustomAgentConfig
+  ): Promise<string> {
+    if (!this.openrouterClient) {
+      throw new Error('OpenRouter client not initialized');
+    }
+
+    const response = await this.openrouterClient.chat.completions.create({
+      model: config.llmModel,
+      messages: messages.map(m => ({
+        role: m.role as 'system' | 'user' | 'assistant',
+        content: m.content,
+      })),
+      temperature: config.temperature,
+      max_tokens: config.maxTokens,
+    });
+
+    return response.choices[0]?.message?.content || 'I apologize, I could not generate a response.';
+  }
+
+  /**
+   * Generate response using direct OpenAI (fallback)
+   */
+  private async generateDirectOpenAIResponse(
+    messages: ConversationMessage[],
+    config: CustomAgentConfig
+  ): Promise<string> {
+    if (!this.openaiClient) {
+      throw new Error('OpenAI client not initialized');
+    }
+
+    // Strip 'openai/' prefix for direct API
+    const modelId = config.llmModel.replace('openai/', '');
+
+    const response = await this.openaiClient.chat.completions.create({
+      model: modelId,
+      messages: messages.map(m => ({
+        role: m.role as 'system' | 'user' | 'assistant',
+        content: m.content,
+      })),
+      temperature: config.temperature,
+      max_tokens: config.maxTokens,
+    });
+
+    return response.choices[0]?.message?.content || 'I apologize, I could not generate a response.';
   }
 
   /**
@@ -283,61 +453,6 @@ export class CustomProvider implements VoiceProviderClient {
         error: error instanceof Error ? error.message : 'Unknown error',
       };
     }
-  }
-
-  /**
-   * Generate response using OpenAI
-   */
-  private async generateOpenAIResponse(
-    messages: ConversationMessage[],
-    config: CustomAgentConfig
-  ): Promise<string> {
-    if (!this.openai) {
-      throw new Error('OpenAI client not initialized');
-    }
-
-    const response = await this.openai.chat.completions.create({
-      model: config.llmModel,
-      messages: messages.map(m => ({
-        role: m.role as 'system' | 'user' | 'assistant',
-        content: m.content,
-      })),
-      temperature: config.temperature,
-      max_tokens: config.maxTokens,
-    });
-
-    return response.choices[0]?.message?.content || 'I apologize, I could not generate a response.';
-  }
-
-  /**
-   * Generate response using Anthropic
-   */
-  private async generateAnthropicResponse(
-    messages: ConversationMessage[],
-    config: CustomAgentConfig
-  ): Promise<string> {
-    if (!this.anthropic) {
-      throw new Error('Anthropic client not initialized');
-    }
-
-    // Extract system message and convert others to Anthropic format
-    const systemMessage = messages.find(m => m.role === 'system')?.content || '';
-    const conversationMessages = messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      }));
-
-    const response = await this.anthropic.messages.create({
-      model: config.llmModel,
-      max_tokens: config.maxTokens,
-      system: systemMessage,
-      messages: conversationMessages,
-    });
-
-    const textContent = response.content.find((c: { type: string }) => c.type === 'text') as { type: 'text'; text: string } | undefined;
-    return textContent?.text || 'I apologize, I could not generate a response.';
   }
 
   /**

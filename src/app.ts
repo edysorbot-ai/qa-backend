@@ -346,6 +346,29 @@ if (!isProduction) {
   });
 } // End of development endpoints block
 
+// Public config routes for custom agents (models/voices list - no auth needed)
+import { customProvider } from './providers/custom.provider';
+
+app.get('/api/custom-agents/config/models', async (req, res) => {
+  try {
+    const models = await customProvider.getAvailableModels();
+    res.json(models);
+  } catch (error) {
+    logger.api.error('Error fetching models:', { error: error instanceof Error ? error.message : 'Unknown' });
+    res.status(500).json({ error: 'Failed to fetch models' });
+  }
+});
+
+app.get('/api/custom-agents/config/voices', async (req, res) => {
+  try {
+    const voices = await customProvider.getAvailableVoices();
+    res.json(voices);
+  } catch (error) {
+    logger.api.error('Error fetching voices:', { error: error instanceof Error ? error.message : 'Unknown' });
+    res.status(500).json({ error: 'Failed to fetch voices' });
+  }
+});
+
 // Protected API routes
 app.use('/api', requireAuthentication, routes);
 

@@ -2,6 +2,7 @@
  * Custom Agent Controller
  * 
  * Handles CRUD operations and chat/simulation for custom agents.
+ * Uses OpenRouter for LLM access, providing access to many models.
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -10,16 +11,6 @@ import { userService } from '../services/user.service';
 import { customProvider, CustomAgentConfig } from '../providers/custom.provider';
 import { v4 as uuidv4 } from 'uuid';
 import { deductCreditsAfterSuccess, CreditRequest } from '../middleware/credits.middleware';
-
-// Available LLM models
-const AVAILABLE_MODELS = [
-  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', description: 'Most capable, best for complex tasks' },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', description: 'Fast and cost-effective' },
-  { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'openai', description: 'Balanced performance' },
-  { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', provider: 'openai', description: 'Fastest, most economical' },
-  { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic', description: 'Excellent reasoning' },
-  { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku', provider: 'anthropic', description: 'Fast and efficient' },
-];
 
 // Available TTS voices (OpenAI)
 const AVAILABLE_VOICES = [
@@ -76,8 +67,8 @@ export class CustomAgentController {
         description: req.body.description,
         systemPrompt: req.body.systemPrompt,
         startingMessage: req.body.startingMessage,
-        llmModel: req.body.llmModel || 'gpt-4o-mini',
-        llmProvider: req.body.llmProvider || 'openai',
+        llmModel: req.body.llmModel || 'openai/gpt-4o-mini',
+        llmProvider: req.body.llmProvider || 'openrouter',
         temperature: req.body.temperature ?? 0.7,
         maxTokens: req.body.maxTokens ?? 500,
         voice: req.body.voice || 'nova',
@@ -291,20 +282,24 @@ export class CustomAgentController {
   }
 
   /**
-   * Get available LLM models
+   * Get available LLM models from OpenRouter
    */
   async getAvailableModels(req: Request, res: Response, next: NextFunction) {
     try {
-      const hasOpenAI = !!process.env.OPENAI_API_KEY;
-      const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+      // Fetch models from OpenRouter
+      const models = await customProvider.getAvailableModels();
+      
+      // Transform to frontend-friendly format
+      const formattedModels = models.map(m => ({
+        id: m.id,
+        name: m.name,
+        description: m.description || '',
+        provider: m.id.split('/')[0] || 'unknown', // Extract provider from model ID (e.g., 'openai/gpt-4o' -> 'openai')
+        contextLength: m.context_length,
+        pricing: m.pricing,
+      }));
 
-      const availableModels = AVAILABLE_MODELS.filter(m => {
-        if (m.provider === 'openai') return hasOpenAI;
-        if (m.provider === 'anthropic') return hasAnthropic;
-        return false;
-      });
-
-      res.json({ models: availableModels });
+      res.json({ models: formattedModels });
     } catch (error) {
       next(error);
     }
