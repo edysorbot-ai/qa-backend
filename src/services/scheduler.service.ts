@@ -2,6 +2,8 @@ import { ScheduledTestModel } from "../models/scheduledTest.model";
 import { batchedTestExecutor } from "./batched-test-executor.service";
 import { emailNotificationService } from "./emailNotification.service";
 import { pool } from "../db";
+import { logger } from "./logger.service";
+import { deductCredits, FeatureKeys } from "../middleware/credits.middleware";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -35,11 +37,11 @@ export class SchedulerService {
    */
   start(): void {
     if (this.isRunning) {
-      console.log("[Scheduler] Already running");
+      logger.scheduler.info("Scheduler already running");
       return;
     }
 
-    console.log("[Scheduler] Starting scheduler service...");
+    logger.scheduler.info("Starting scheduler service...");
     this.isRunning = true;
 
     // Run immediately on start
@@ -50,7 +52,7 @@ export class SchedulerService {
       this.checkAndRunDueTests();
     }, this.checkIntervalMs);
 
-    console.log(`[Scheduler] Scheduler started, checking every ${this.checkIntervalMs / 1000} seconds`);
+    logger.scheduler.info(`Scheduler started, checking every ${this.checkIntervalMs / 1000} seconds`);
   }
 
   /**
@@ -62,7 +64,51 @@ export class SchedulerService {
       this.intervalId = null;
     }
     this.isRunning = false;
-    console.log("[Scheduler] Scheduler stopped");
+    logger.scheduler.info("Scheduler stopped");
+  }
+
+  /**
+   * Check user has sufficient credits for scheduled test
+   */
+  private async validateUserCredits(userId: string, testCaseCount: number): Promise<{ valid: boolean; message?: string }> {
+    try {
+      const result = await pool.query(`
+        SELECT 
+          uc.current_credits,
+          cp.is_unlimited,
+          fcc.credit_cost
+        FROM user_credits uc
+        LEFT JOIN credit_packages cp ON uc.package_id = cp.id
+        LEFT JOIN feature_credit_costs fcc ON fcc.feature_key = $2 AND fcc.is_active = true
+        WHERE uc.user_id = $1
+      `, [userId, FeatureKeys.TEST_RUN_EXECUTE]);
+
+      const row = result.rows[0];
+      
+      if (!row) {
+        return { valid: false, message: 'No subscription found' };
+      }
+
+      // Unlimited packages always valid
+      if (row.is_unlimited) {
+        return { valid: true };
+      }
+
+      const costPerTest = row.credit_cost || 1;
+      const totalCost = costPerTest * testCaseCount;
+
+      if (row.current_credits < totalCost) {
+        return { 
+          valid: false, 
+          message: `Insufficient credits. Required: ${totalCost}, Available: ${row.current_credits}` 
+        };
+      }
+
+      return { valid: true };
+    } catch (error) {
+      logger.scheduler.error('Error validating credits', { userId, error: error instanceof Error ? error.message : 'Unknown' });
+      return { valid: false, message: 'Credit validation failed' };
+    }
   }
 
   /**
@@ -76,13 +122,13 @@ export class SchedulerService {
         return;
       }
 
-      console.log(`[Scheduler] Found ${dueTests.length} due test(s) to run`);
+      logger.scheduler.info(`Found ${dueTests.length} due test(s) to run`);
 
       for (const scheduledTest of dueTests) {
         await this.runScheduledTest(scheduledTest);
       }
     } catch (error) {
-      console.error("[Scheduler] Error checking for due tests:", error);
+      logger.scheduler.error("Error checking for due tests:", { error: error instanceof Error ? error.message : 'Unknown' });
     }
   }
 
@@ -90,9 +136,34 @@ export class SchedulerService {
    * Run a single scheduled test
    */
   private async runScheduledTest(scheduledTest: any): Promise<void> {
-    console.log(`[Scheduler] Running scheduled test: ${scheduledTest.name} (${scheduledTest.id})`);
+    logger.scheduler.info(`Running scheduled test: ${scheduledTest.name}`, { 
+      scheduledTestId: scheduledTest.id,
+      userId: scheduledTest.user_id,
+    });
 
     try {
+      // Count test cases in batches
+      const testCaseCount = (scheduledTest.batches || []).reduce(
+        (sum: number, batch: any) => sum + (batch.testCases?.length || 0), 
+        0
+      );
+
+      // Validate credits before running
+      const creditCheck = await this.validateUserCredits(scheduledTest.user_id, testCaseCount);
+      if (!creditCheck.valid) {
+        logger.scheduler.warn(`Scheduled test skipped due to insufficient credits`, {
+          scheduledTestId: scheduledTest.id,
+          userId: scheduledTest.user_id,
+          reason: creditCheck.message,
+        });
+        
+        // Pause the scheduled test and notify
+        await ScheduledTestModel.updateStatus(scheduledTest.id, "paused");
+        
+        // Could also send email notification about insufficient credits
+        return;
+      }
+
       // Get the agent details
       const agentQuery = `
         SELECT a.*, i.api_key 
@@ -103,12 +174,31 @@ export class SchedulerService {
       const agentResult = await pool.query(agentQuery, [scheduledTest.agent_id]);
 
       if (!agentResult.rows[0]) {
-        console.error(`[Scheduler] Agent not found for scheduled test: ${scheduledTest.id}`);
+        logger.scheduler.error(`Agent not found for scheduled test`, { 
+          scheduledTestId: scheduledTest.id,
+          agentId: scheduledTest.agent_id,
+        });
         await ScheduledTestModel.updateStatus(scheduledTest.id, "paused");
         return;
       }
 
       const agent = agentResult.rows[0];
+
+      // Deduct credits before starting
+      const creditDeducted = await deductCredits(
+        scheduledTest.user_id,
+        testCaseCount, // Simplified: 1 credit per test case
+        `Scheduled test: ${scheduledTest.name}`,
+        { scheduledTestId: scheduledTest.id, testCaseCount }
+      );
+
+      if (!creditDeducted) {
+        logger.scheduler.warn(`Failed to deduct credits for scheduled test`, {
+          scheduledTestId: scheduledTest.id,
+          userId: scheduledTest.user_id,
+        });
+        return;
+      }
 
       // Create a test run
       const testRunQuery = `
@@ -137,7 +227,10 @@ export class SchedulerService {
       // Update the scheduled test after successful start
       await ScheduledTestModel.updateAfterRun(scheduledTest.id);
 
-      console.log(`[Scheduler] Started test run ${testRunId} for scheduled test ${scheduledTest.id}`);
+      logger.scheduler.info(`Started test run for scheduled test`, { 
+        testRunId,
+        scheduledTestId: scheduledTest.id,
+      });
 
       // Execute batches in background
       this.executeBatches(
@@ -145,11 +238,17 @@ export class SchedulerService {
         scheduledTest,
         agent
       ).catch((error: Error) => {
-        console.error(`[Scheduler] Error executing scheduled test ${scheduledTest.id}:`, error);
+        logger.scheduler.error(`Error executing scheduled test`, { 
+          scheduledTestId: scheduledTest.id,
+          error: error.message,
+        });
       });
 
     } catch (error) {
-      console.error(`[Scheduler] Error running scheduled test ${scheduledTest.id}:`, error);
+      logger.scheduler.error(`Error running scheduled test`, { 
+        scheduledTestId: scheduledTest.id,
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
     }
   }
 
@@ -171,11 +270,14 @@ export class SchedulerService {
     const enableConcurrency = scheduledTest.enable_concurrency || false;
     const concurrencyCount = scheduledTest.concurrency_count || 1;
 
-    console.log(`[Scheduler] Executing ${batches.length} batches for test run ${testRunId}`);
+    logger.scheduler.info(`Executing ${batches.length} batches for test run`, { testRunId });
 
     // Helper function to execute a single batch
     const executeSingleBatch = async (batch: any, batchIndex: number) => {
-      console.log(`[Scheduler] Executing batch ${batchIndex + 1}/${batches.length}: ${batch.name}`);
+      logger.scheduler.debug(`Executing batch ${batchIndex + 1}/${batches.length}`, { 
+        batchName: batch.name,
+        testRunId,
+      });
 
       try {
         // Update test cases to 'running' status
@@ -285,10 +387,19 @@ export class SchedulerService {
           );
         }
 
-        console.log(`[Scheduler] Batch ${batch.id} completed: ${results.filter((r: any) => r.passed).length}/${results.length} passed`);
+        logger.scheduler.info(`Batch completed`, { 
+          batchId: batch.id, 
+          testRunId,
+          passed: results.filter((r: any) => r.passed).length,
+          total: results.length,
+        });
 
       } catch (error) {
-        console.error(`[Scheduler] Batch ${batch.id} failed:`, error);
+        logger.scheduler.error(`Batch failed`, { 
+          batchId: batch.id,
+          testRunId,
+          error: error instanceof Error ? error.message : 'Unknown',
+        });
 
         // Mark all test cases in batch as failed
         for (const tc of batch.testCases) {
@@ -321,17 +432,17 @@ export class SchedulerService {
       [new Date(), testRunId]
     );
 
-    console.log(`[Scheduler] Completed all batches for ${testRunId}`);
+    logger.scheduler.info(`Completed all batches`, { testRunId });
 
     // Send email notifications for failed tests
     emailNotificationService.checkAndNotifyTestRunFailures(testRunId)
       .then((sent: boolean) => {
         if (sent) {
-          console.log(`[Scheduler] Failure notification sent for test run ${testRunId}`);
+          logger.scheduler.info(`Failure notification sent`, { testRunId });
         }
       })
       .catch((err: Error) => {
-        console.error(`[Scheduler] Failed to send notification:`, err);
+        logger.scheduler.error(`Failed to send notification`, { testRunId, error: err.message });
       });
   }
 }

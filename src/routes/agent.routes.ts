@@ -1,6 +1,11 @@
 import { Router } from 'express';
 import { agentController } from '../controllers/agent.controller';
 import { workflowController } from '../controllers/workflow.controller';
+import { 
+  requireSubscriptionAndCredits,
+  requireSubscription,
+  FeatureKeys 
+} from '../middleware/credits.middleware';
 
 const router = Router();
 
@@ -10,8 +15,11 @@ router.get('/', agentController.getAll.bind(agentController));
 // GET /api/agents/:id - Get agent by ID
 router.get('/:id', agentController.getById.bind(agentController));
 
-// POST /api/agents - Create new agent
-router.post('/', agentController.create.bind(agentController));
+// POST /api/agents - Create new agent (requires subscription and credits)
+router.post('/', 
+  ...requireSubscriptionAndCredits(FeatureKeys.AGENT_CREATE),
+  agentController.create.bind(agentController)
+);
 
 // PUT /api/agents/:id - Update agent
 router.put('/:id', agentController.update.bind(agentController));
@@ -28,8 +36,14 @@ router.get('/:id/config-versions', agentController.getConfigVersions.bind(agentC
 // POST /api/agents/:id/check-prompt - Check if prompt/config changed and create version
 router.post('/:id/check-prompt', agentController.checkPromptUpdate.bind(agentController));
 
-// POST /api/agents/:id/generate-test-cases - Generate test cases for agent
-router.post('/:id/generate-test-cases', agentController.generateTestCases.bind(agentController));
+// POST /api/agents/:id/generate-test-cases - Generate test cases for agent (requires subscription)
+router.post('/:id/generate-test-cases', 
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_CASE_CREATE, (req) => {
+    // Charge per test case generated (default to 10 if not specified)
+    return req.body?.maxTestCases || 10;
+  }),
+  agentController.generateTestCases.bind(agentController)
+);
 
 // POST /api/agents/:id/analyze-prompt - Analyze agent's prompt using AI
 router.post('/:id/analyze-prompt', agentController.analyzePrompt.bind(agentController));
@@ -43,8 +57,14 @@ router.get('/:id/knowledge-base', agentController.getKnowledgeBase.bind(agentCon
 // GET /api/agents/:id/test-cases - Get test cases for agent
 router.get('/:id/test-cases', agentController.getTestCases.bind(agentController));
 
-// POST /api/agents/:id/test-cases - Save test cases for agent
-router.post('/:id/test-cases', agentController.saveTestCases.bind(agentController));
+// POST /api/agents/:id/test-cases - Save test cases for agent (requires subscription)
+router.post('/:id/test-cases', 
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_CASE_CREATE, (req) => {
+    // Charge per test case being saved
+    return Array.isArray(req.body?.testCases) ? req.body.testCases.length : 1;
+  }),
+  agentController.saveTestCases.bind(agentController)
+);
 
 // Workflow routes
 // GET /api/agents/:agentId/workflow - Get workflow for agent

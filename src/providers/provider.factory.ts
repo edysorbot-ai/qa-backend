@@ -10,6 +10,8 @@ import { vapiProvider } from './vapi.provider';
 import { openaiRealtimeProvider } from './openai-realtime.provider';
 import { haptikProvider } from './haptik.provider';
 import { customProvider } from './custom.provider';
+import { bolnaProvider } from './bolna.provider';
+import { livekitProvider } from './livekit.provider';
 
 export function getProviderClient(provider: Provider): VoiceProviderClient {
   switch (provider) {
@@ -25,6 +27,10 @@ export function getProviderClient(provider: Provider): VoiceProviderClient {
       return haptikProvider;
     case 'custom':
       return customProvider;
+    case 'bolna':
+      return bolnaProvider;
+    case 'livekit':
+      return livekitProvider;
     default:
       throw new Error(`Unknown provider: ${provider}`);
   }
@@ -37,4 +43,6 @@ export const providerClients: Record<Provider, VoiceProviderClient> = {
   openai_realtime: openaiRealtimeProvider,
   haptik: haptikProvider,
   custom: customProvider,
+  bolna: bolnaProvider,
+  livekit: livekitProvider,
 };

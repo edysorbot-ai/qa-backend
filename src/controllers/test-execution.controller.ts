@@ -15,6 +15,14 @@ import {
   TestRunConfig,
 } from '../services/real-test-executor.service';
 import { emailNotificationService } from '../services/emailNotification.service';
+import { 
+  requireSubscriptionAndCredits, 
+  deductCreditsAfterSuccess,
+  FeatureKeys,
+  CreditRequest 
+} from '../middleware/credits.middleware';
+import { userService } from '../services/user.service';
+import { teamMemberService } from '../services/teamMember.service';
 
 // Create recordings directory if it doesn't exist
 const recordingsDir = path.join(__dirname, '../../recordings');
@@ -28,7 +36,12 @@ const router = Router();
  * Start a new test run
  * POST /api/test-execution/start
  */
-router.post('/start', async (req: Request, res: Response) => {
+router.post('/start', 
+  // Require subscription and credits based on number of test cases
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_RUN_EXECUTE, (req) => {
+    return Array.isArray(req.body?.testCases) ? req.body.testCases.length : 1;
+  }),
+  async (req: Request, res: Response) => {
   try {
     const {
       name,
@@ -120,6 +133,13 @@ router.post('/start', async (req: Request, res: Response) => {
 
     console.log(`[Controller] Created ${formattedTestCases.length} pending test results`);
 
+    // Deduct credits for the test run
+    await deductCreditsAfterSuccess(
+      req as CreditRequest,
+      `Test run: ${testRunName} (${formattedTestCases.length} tests)`,
+      { testRunId, testCount: formattedTestCases.length, provider }
+    );
+
     // Return immediately, run tests in background
     res.json({
       success: true,
@@ -162,6 +182,149 @@ router.post('/start', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: `Failed to start test run: ${errorMessage}`,
+    });
+  }
+});
+
+/**
+ * Check if user has sufficient credits for test execution
+ * POST /api/test-execution/check-credits
+ * 
+ * This is a preflight check before batch planning to give early feedback
+ * Returns 402 if user doesn't have enough credits/subscription
+ */
+router.post('/check-credits', async (req: Request, res: Response) => {
+  try {
+    const { testCaseCount = 1 } = req.body;
+
+    // Get authenticated user ID from Clerk
+    const auth = (req as any).auth;
+    const clerkUserId = auth?.userId;
+
+    if (!clerkUserId) {
+      return res.status(401).json({
+        success: false,
+        error: 'User not authenticated',
+      });
+    }
+
+    // Get internal user ID
+    const userResult = await pool.query(
+      'SELECT id FROM users WHERE clerk_id = $1',
+      [clerkUserId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+      });
+    }
+
+    const userId = userResult.rows[0].id;
+
+    // Check if user has credits - using correct column names from schema
+    const creditsResult = await pool.query(
+      `SELECT uc.*, cp.name as package_name, cp.credits as package_credits, cp.is_unlimited
+       FROM user_credits uc
+       LEFT JOIN credit_packages cp ON uc.package_id = cp.id
+       WHERE uc.user_id = $1`,
+      [userId]
+    );
+
+    if (creditsResult.rows.length === 0) {
+      return res.status(402).json({
+        success: false,
+        error: {
+          code: 'NO_SUBSCRIPTION',
+          message: 'You need an active subscription to run tests',
+          details: {
+            required: testCaseCount * 10,
+            available: 0,
+          },
+        },
+      });
+    }
+
+    const userCredits = creditsResult.rows[0];
+
+    // Check if subscription has expired
+    const isExpired = userCredits.package_expires_at && new Date(userCredits.package_expires_at) < new Date();
+    if (isExpired) {
+      return res.status(402).json({
+        success: false,
+        error: {
+          code: 'SUBSCRIPTION_INACTIVE',
+          message: 'Your subscription has expired. Please renew to continue testing.',
+          details: {
+            packageName: userCredits.package_name,
+            required: testCaseCount * 10,
+            available: userCredits.current_credits || 0,
+          },
+        },
+      });
+    }
+
+    // Get feature cost - using correct column name from schema
+    const featureCostResult = await pool.query(
+      'SELECT credit_cost FROM feature_credit_costs WHERE feature_key = $1',
+      [FeatureKeys.TEST_RUN_EXECUTE]
+    );
+
+    const creditsPerTest = featureCostResult.rows.length > 0 
+      ? featureCostResult.rows[0].credit_cost 
+      : 10; // Default to 10 credits per test
+
+    const totalCreditsNeeded = testCaseCount * creditsPerTest;
+    const availableCredits = userCredits.current_credits || 0;
+
+    // If user has unlimited package, always allow
+    if (userCredits.is_unlimited) {
+      return res.json({
+        success: true,
+        data: {
+          available: 'unlimited',
+          required: totalCreditsNeeded,
+          remaining: 'unlimited',
+          packageName: userCredits.package_name,
+        },
+      });
+    }
+
+    // Check if user has enough credits
+    if (availableCredits < totalCreditsNeeded) {
+      return res.status(402).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_CREDITS',
+          message: `You need ${totalCreditsNeeded} credits to run ${testCaseCount} test(s), but only have ${availableCredits} credits available.`,
+          details: {
+            required: totalCreditsNeeded,
+            available: availableCredits,
+            creditsPerTest,
+            testCaseCount,
+            packageName: userCredits.package_name,
+          },
+        },
+      });
+    }
+
+    // User has sufficient credits
+    res.json({
+      success: true,
+      data: {
+        available: availableCredits,
+        required: totalCreditsNeeded,
+        remaining: availableCredits - totalCreditsNeeded,
+        packageName: userCredits.package_name,
+      },
+    });
+
+  } catch (error) {
+    console.error('Failed to check credits:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to check credit status',
     });
   }
 });
@@ -1185,7 +1348,17 @@ router.post('/analyze-for-batching', async (req: Request, res: Response) => {
  * - apiKey directly (legacy)
  * - integrationId to look up API key from database (preferred)
  */
-router.post('/start-batched', async (req: Request, res: Response) => {
+router.post('/start-batched', 
+  // Require subscription and credits based on total test cases across all batches
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_RUN_EXECUTE, (req) => {
+    const batches = req.body?.batches || [];
+    let totalTests = 0;
+    for (const batch of batches) {
+      totalTests += Array.isArray(batch.testCases) ? batch.testCases.length : 0;
+    }
+    return totalTests || 1;
+  }),
+  async (req: Request, res: Response) => {
   try {
     const {
       name,
@@ -1343,6 +1516,13 @@ router.post('/start-batched', async (req: Request, res: Response) => {
     });
     console.log(`[BatchedExecution] Batching enabled: ${enableBatching}`);
     console.log(`[BatchedExecution] Concurrency enabled: ${enableConcurrency}, count: ${concurrencyCount}`);
+
+    // Deduct credits after successful test run creation
+    await deductCreditsAfterSuccess(
+      req as CreditRequest,
+      `Batched test run: ${testRunName} (${totalTestCases} tests)`,
+      { testRunId, batchCount: batches.length, testCount: totalTestCases, provider: resolvedProvider }
+    );
 
     res.json({
       success: true,
@@ -1583,13 +1763,23 @@ async function executeBatchedCalls(
     }
   }
   
-  // Update test run status to completed
-  await pool.query(
-    `UPDATE test_runs SET status = 'completed', completed_at = $1 WHERE id = $2`,
-    [new Date(), testRunId]
+  // Count passed and failed tests
+  const passedCount = await pool.query(
+    `SELECT COUNT(*) FROM test_results WHERE test_run_id = $1 AND status = 'passed'`,
+    [testRunId]
+  );
+  const failedCount = await pool.query(
+    `SELECT COUNT(*) FROM test_results WHERE test_run_id = $1 AND status = 'failed'`,
+    [testRunId]
   );
   
-  console.log(`[BatchedExecution] Completed all batches for ${testRunId}`);
+  // Update test run status to completed with accurate counts
+  await pool.query(
+    `UPDATE test_runs SET status = 'completed', completed_at = $1, passed_tests = $2, failed_tests = $3 WHERE id = $4`,
+    [new Date(), parseInt(passedCount.rows[0].count), parseInt(failedCount.rows[0].count), testRunId]
+  );
+  
+  console.log(`[BatchedExecution] Completed all batches for ${testRunId} - Passed: ${passedCount.rows[0].count}, Failed: ${failedCount.rows[0].count}`);
 
   // Send email notifications for failed tests
   emailNotificationService.checkAndNotifyTestRunFailures(testRunId)
@@ -1756,13 +1946,23 @@ async function executeBatchedTestRun(
     }
   }
   
-  // Update test run status to completed
-  await pool.query(
-    `UPDATE test_runs SET status = 'completed', completed_at = $1 WHERE id = $2`,
-    [new Date(), testRunId]
+  // Update test run status to completed with accurate counts
+  const passedCount = await pool.query(
+    `SELECT COUNT(*) FROM test_results WHERE test_run_id = $1 AND status = 'passed'`,
+    [testRunId]
+  );
+  const failedCount = await pool.query(
+    `SELECT COUNT(*) FROM test_results WHERE test_run_id = $1 AND status = 'failed'`,
+    [testRunId]
   );
   
-  console.log(`[BatchedExecutor] Completed batched execution for ${testRunId}`);
+  await pool.query(
+    `UPDATE test_runs SET status = 'completed', completed_at = $1, 
+     passed_tests = $2, failed_tests = $3 WHERE id = $4`,
+    [new Date(), parseInt(passedCount.rows[0].count), parseInt(failedCount.rows[0].count), testRunId]
+  );
+  
+  console.log(`[BatchedExecutor] Completed batched execution for ${testRunId} - Passed: ${passedCount.rows[0].count}, Failed: ${failedCount.rows[0].count}`);
 
   // Send email notifications for failed tests
   emailNotificationService.checkAndNotifyTestRunFailures(testRunId)

@@ -9,6 +9,7 @@ import { agentService } from '../services/agent.service';
 import { userService } from '../services/user.service';
 import { customProvider, CustomAgentConfig } from '../providers/custom.provider';
 import { v4 as uuidv4 } from 'uuid';
+import { deductCreditsAfterSuccess, CreditRequest } from '../middleware/credits.middleware';
 
 // Available LLM models
 const AVAILABLE_MODELS = [
@@ -101,6 +102,13 @@ export class CustomAgentController {
         intents: [],
         config: config as any,
       });
+
+      // Deduct credits after successful creation
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Created custom agent: ${config.name}`,
+        { agentId: agent.id }
+      );
 
       res.status(201).json({ agent });
     } catch (error) {
@@ -227,6 +235,13 @@ export class CustomAgentController {
         return res.status(500).json({ error: 'Failed to get agent response' });
       }
 
+      // Deduct credits for chat
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Chat with custom agent: ${agent.name}`,
+        { agentId: id, messageLength: message.length }
+      );
+
       res.json(response);
     } catch (error) {
       next(error);
@@ -256,6 +271,13 @@ export class CustomAgentController {
 
       const config = agent.config as CustomAgentConfig;
       const result = await customProvider.runChatConversation('custom', id, messages, config);
+
+      // Deduct credits for simulation
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Simulation with custom agent: ${agent.name}`,
+        { agentId: id, messageCount: messages.length }
+      );
 
       res.json({
         success: result.success,

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { testCaseService } from '../services/testCase.service';
 import { userService } from '../services/user.service';
 import { teamMemberService } from '../services/teamMember.service';
+import { deductCreditsAfterSuccess, CreditRequest } from '../middleware/credits.middleware';
 
 export class TestCaseController {
   async getAll(req: Request, res: Response, next: NextFunction) {
@@ -63,6 +64,13 @@ export class TestCaseController {
         scenario,
       });
 
+      // Deduct credits after successful creation
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Created test case: ${name}`,
+        { testCaseId: testCase.id, agentId: agent_id }
+      );
+
       res.status(201).json({ testCase });
     } catch (error) {
       next(error);
@@ -73,6 +81,9 @@ export class TestCaseController {
     try {
       const clerkUser = (req as any).auth;
       const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      
+      // Get the effective user ID (owner's ID for team members)
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { test_cases } = req.body;
 
@@ -82,10 +93,18 @@ export class TestCaseController {
 
       const testCasesWithUser = test_cases.map(tc => ({
         ...tc,
-        user_id: user.id,
+        user_id: effectiveUserId,
       }));
 
       const created = await testCaseService.createMany(testCasesWithUser);
+      
+      // Deduct credits after successful creation
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Created ${created.length} test cases`,
+        { testCaseIds: created.map(tc => tc.id), count: created.length }
+      );
+
       res.status(201).json({ testCases: created });
     } catch (error) {
       next(error);

@@ -4,6 +4,11 @@ import { userService } from '../services/user.service';
 import { emailNotificationService } from '../services/emailNotification.service';
 import { alertSettingsService } from '../services/alertSettings.service';
 import { clerkClient } from '@clerk/express';
+import { pool } from '../db';
+import { 
+  requireSubscription,
+  FeatureKeys 
+} from '../middleware/credits.middleware';
 
 const router = Router();
 
@@ -18,6 +23,38 @@ async function getUserIdFromRequest(req: Request): Promise<string | null> {
   
   const user = await userService.findOrCreateByClerkId(clerkUser.userId);
   return user?.id || null;
+}
+
+/**
+ * Check team member limit for user's package
+ */
+async function checkTeamMemberLimit(userId: string): Promise<{ allowed: boolean; current: number; max: number }> {
+  const result = await pool.query(`
+    SELECT 
+      cp.max_team_members,
+      (SELECT COUNT(*) FROM team_members WHERE owner_user_id = $1) as current_count
+    FROM user_credits uc
+    JOIN credit_packages cp ON uc.package_id = cp.id
+    WHERE uc.user_id = $1 AND (uc.package_expires_at IS NULL OR uc.package_expires_at > NOW())
+  `, [userId]);
+
+  if (!result.rows[0]) {
+    return { allowed: false, current: 0, max: 0 };
+  }
+
+  const maxMembers = result.rows[0].max_team_members;
+  const currentCount = parseInt(result.rows[0].current_count);
+
+  // -1 means unlimited
+  if (maxMembers === -1) {
+    return { allowed: true, current: currentCount, max: -1 };
+  }
+
+  return { 
+    allowed: currentCount < maxMembers, 
+    current: currentCount, 
+    max: maxMembers 
+  };
 }
 
 /**
@@ -66,9 +103,11 @@ router.get('/check-role', async (req: Request, res: Response) => {
 
 /**
  * POST /api/team-members
- * Create a new team member
+ * Create a new team member (requires subscription with team member quota)
  */
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', 
+  requireSubscription,
+  async (req: Request, res: Response) => {
   try {
     const userId = await getUserIdFromRequest(req);
     if (!userId) {
@@ -79,6 +118,21 @@ router.post('/', async (req: Request, res: Response) => {
     const isTeamMember = await teamMemberService.isTeamMember(userId);
     if (isTeamMember) {
       return res.status(403).json({ message: 'Team members cannot add other team members' });
+    }
+
+    // Check team member limit
+    const limitCheck = await checkTeamMemberLimit(userId);
+    if (!limitCheck.allowed) {
+      return res.status(402).json({ 
+        error: 'team_member_limit_reached',
+        message: 'You have reached the maximum number of team members for your plan',
+        details: {
+          current: limitCheck.current,
+          max: limitCheck.max,
+          upgradeRequired: true,
+          action: 'Please upgrade your package to add more team members'
+        }
+      });
     }
 
     const { email, name, password } = req.body;

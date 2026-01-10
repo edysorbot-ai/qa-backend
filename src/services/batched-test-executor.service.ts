@@ -249,6 +249,16 @@ export class BatchedTestExecutorService {
         result = await this.executeCustomAgentChatAPI(batch, agentConfig, transcript);
         break;
       
+      case 'bolna':
+        // Bolna: Use chat simulation (Bolna doesn't have a direct text API)
+        result = await this.executeBolnaChatSimulation(batch, agentConfig, transcript);
+        break;
+      
+      case 'livekit':
+        // LiveKit: Use chat simulation (LiveKit is WebRTC-based)
+        result = await this.executeLiveKitChatSimulation(batch, agentConfig, transcript);
+        break;
+      
       default:
         console.log(`[BatchedExecutor] Unknown provider ${agentConfig.provider}, falling back to voice`);
         result = await this.executeVoiceBasedTest(batch, agentConfig, transcript, [], []);
@@ -306,6 +316,14 @@ export class BatchedTestExecutorService {
       case 'custom':
         // Custom Agent: Simulated voice call using STT + LLM + TTS on both sides
         return this.executeCustomAgentVoiceSimulation(batch, agentConfig, transcript, audioChunks, userAudioChunks);
+      
+      case 'bolna':
+        // Bolna AI: Use real call API for voice testing
+        return this.executeBolnaVoiceCall(batch, agentConfig, transcript, audioChunks, userAudioChunks);
+      
+      case 'livekit':
+        // LiveKit: Use room-based WebRTC voice testing
+        return this.executeLiveKitVoiceSimulation(batch, agentConfig, transcript, audioChunks, userAudioChunks);
       
       case 'elevenlabs':
       default:
@@ -3518,6 +3536,614 @@ Analyze and return results as JSON.`;
 
       sendChunk();
     });
+  }
+
+  /**
+   * Execute Bolna AI Voice Call
+   * Uses Bolna's call API to initiate a real voice call and polls for completion
+   */
+  private async executeBolnaVoiceCall(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
+    transcript: ConversationTurn[],
+    audioChunks: Buffer[],
+    userAudioChunks: Buffer[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Starting Bolna Voice Call for batch: ${batch.name}`);
+      console.log(`[BatchedExecutor] Bolna Agent ID: ${agentConfig.agentId}`);
+
+      const { bolnaProvider } = await import('../providers/bolna.provider');
+
+      // Check if we have a phone number for real call
+      if (agentConfig.phoneNumber) {
+        // Initiate real Bolna call
+        console.log(`[BatchedExecutor] Initiating Bolna call to: ${agentConfig.phoneNumber}`);
+        
+        const callResult = await bolnaProvider.initiateCall(
+          agentConfig.apiKey,
+          agentConfig.agentId,
+          agentConfig.phoneNumber
+        );
+
+        if (!callResult?.execution_id) {
+          return { success: false, error: 'Failed to initiate Bolna call' };
+        }
+
+        console.log(`[BatchedExecutor] Bolna call initiated, execution ID: ${callResult.execution_id}`);
+
+        // Wait for call completion and get execution details
+        const execution = await bolnaProvider.waitForExecutionComplete(
+          agentConfig.apiKey,
+          callResult.execution_id,
+          300000 // 5 minute timeout
+        );
+
+        if (!execution) {
+          return { success: false, error: 'Bolna call timed out or failed' };
+        }
+
+        console.log(`[BatchedExecutor] Bolna call completed, status: ${execution.status}`);
+
+        // Parse transcript from execution
+        const parsedTranscript = bolnaProvider.parseTranscript(execution);
+        for (const turn of parsedTranscript) {
+          transcript.push({
+            role: turn.role as 'test_caller' | 'ai_agent',
+            content: turn.content,
+            timestamp: turn.timestamp,
+          });
+        }
+
+        // Download recording if available (from telephony_data)
+        const recordingUrl = (execution as any).telephony_data?.recording_url;
+        if (recordingUrl) {
+          try {
+            const response = await fetch(recordingUrl);
+            if (response.ok) {
+              const audioBuffer = Buffer.from(await response.arrayBuffer());
+              audioChunks.push(audioBuffer);
+              console.log(`[BatchedExecutor] Downloaded Bolna recording: ${audioBuffer.length} bytes`);
+            }
+          } catch (downloadError) {
+            console.warn(`[BatchedExecutor] Failed to download Bolna recording:`, downloadError);
+          }
+        }
+
+        return { success: execution.status === 'completed' };
+      }
+
+      // No phone number - fall back to voice simulation
+      console.log(`[BatchedExecutor] No phone number for Bolna, using voice simulation`);
+      return this.executeBolnaVoiceSimulation(batch, agentConfig, transcript, audioChunks, userAudioChunks);
+
+    } catch (error) {
+      console.error(`[BatchedExecutor] Bolna Voice Call error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Execute Bolna Voice Simulation
+   * Simulates a voice conversation for Bolna agents using TTS + LLM
+   */
+  private async executeBolnaVoiceSimulation(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[],
+    audioChunks: Buffer[],
+    userAudioChunks: Buffer[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Starting Bolna Voice Simulation for batch: ${batch.name}`);
+      console.log(`[BatchedExecutor] Bolna Agent ID: ${agentConfig.agentId}`);
+
+      const { bolnaProvider } = await import('../providers/bolna.provider');
+      const { TTSService, DEFAULT_VOICES } = await import('./tts.service');
+
+      // Initialize TTS service
+      const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+      if (!elevenLabsApiKey) {
+        console.error('[BatchedExecutor] Missing ElevenLabs API key for voice simulation');
+        return this.executeBolnaChatSimulation(batch, agentConfig, transcript);
+      }
+
+      const ttsService = new TTSService(elevenLabsApiKey);
+
+      // Fetch Bolna agent configuration
+      const agent = await bolnaProvider.getAgent(agentConfig.apiKey, agentConfig.agentId);
+      if (!agent) {
+        return { success: false, error: 'Failed to fetch Bolna agent configuration' };
+      }
+
+      // Cast to access Bolna-specific properties
+      const bolnaAgent = agent as any;
+
+      // Extract system prompt from agent tasks
+      let systemPrompt = 'You are a helpful voice assistant.';
+      let beginMessage = 'Hello! How can I help you today?';
+
+      // Find conversation/LLM task for system prompt
+      const llmTask = bolnaAgent.tasks?.find((t: any) => 
+        t.task_type === 'conversation' || t.task_type === 'llm' || t.task_type === 'extraction'
+      );
+      if (llmTask?.task_config?.agent_prompt) {
+        systemPrompt = llmTask.task_config.agent_prompt;
+      }
+
+      // Find welcome message
+      if (bolnaAgent.tasks?.[0]?.task_config?.initial_message) {
+        beginMessage = bolnaAgent.tasks[0].task_config.initial_message;
+      }
+
+      const agentVoiceId = DEFAULT_VOICES.female;
+      const testCallerVoiceId = DEFAULT_VOICES.male;
+
+      console.log(`[BatchedExecutor] Bolna agent loaded: ${bolnaAgent.agent_name || agent.name}`);
+      console.log(`[BatchedExecutor] System prompt length: ${systemPrompt.length}`);
+
+      // Build test caller prompt
+      const testCallerPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      const testCallerHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: testCallerPrompt }
+      ];
+
+      // Build agent history
+      const agentHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: systemPrompt }
+      ];
+
+      const testedCases = new Set<string>();
+      let turnCount = 0;
+      const maxTurns = Math.min(batch.testCases.length * 3 + 5, 30);
+
+      // Start with agent's begin message
+      if (beginMessage) {
+        try {
+          const agentAudio = await ttsService.generateSpeech({
+            text: beginMessage,
+            voiceId: agentVoiceId,
+          });
+          audioChunks.push(agentAudio.audioBuffer);
+        } catch (ttsError) {
+          console.warn(`[BatchedExecutor] TTS failed for begin message:`, ttsError);
+        }
+
+        transcript.push({
+          role: 'ai_agent',
+          content: beginMessage,
+          timestamp: Date.now(),
+        });
+        agentHistory.push({ role: 'assistant', content: beginMessage });
+        testCallerHistory.push({ role: 'user', content: beginMessage });
+        turnCount++;
+      }
+
+      // Voice conversation loop
+      while (turnCount < maxTurns && testedCases.size < batch.testCases.length) {
+        const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+        
+        // Test caller generates response
+        const testCallerResponse = await this.generateBatchTestCallerResponse(
+          testCallerHistory,
+          remainingCases,
+          testedCases.size
+        );
+
+        if (!testCallerResponse.text || this.isGoodbyeMessage(testCallerResponse.text)) {
+          break;
+        }
+
+        // Test caller TTS
+        try {
+          const testCallerAudio = await ttsService.generateSpeech({
+            text: testCallerResponse.text,
+            voiceId: testCallerVoiceId,
+          });
+          audioChunks.push(testCallerAudio.audioBuffer);
+          userAudioChunks.push(testCallerAudio.audioBuffer);
+        } catch (ttsError) {
+          console.warn(`[BatchedExecutor] Test caller TTS failed:`, ttsError);
+        }
+
+        // Agent response simulation
+        agentHistory.push({ role: 'user', content: testCallerResponse.text });
+        const agentResponseText = await this.generateAgentSimulationResponse(agentHistory);
+        
+        if (!agentResponseText) break;
+
+        // Agent TTS
+        try {
+          const agentAudio = await ttsService.generateSpeech({
+            text: agentResponseText,
+            voiceId: agentVoiceId,
+          });
+          audioChunks.push(agentAudio.audioBuffer);
+        } catch (ttsError) {
+          console.warn(`[BatchedExecutor] Agent TTS failed:`, ttsError);
+        }
+
+        // Add to transcript
+        transcript.push({
+          role: 'test_caller',
+          content: testCallerResponse.text,
+          timestamp: Date.now(),
+          testCaseId: testCallerResponse.testCaseId,
+        });
+
+        transcript.push({
+          role: 'ai_agent',
+          content: agentResponseText,
+          timestamp: Date.now(),
+        });
+
+        agentHistory.push({ role: 'assistant', content: agentResponseText });
+        testCallerHistory.push({ role: 'user', content: agentResponseText });
+
+        if (testCallerResponse.testCaseId) {
+          testedCases.add(testCallerResponse.testCaseId);
+        }
+        testCallerHistory.push({ role: 'assistant', content: testCallerResponse.text });
+        turnCount++;
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      console.log(`[BatchedExecutor] Bolna Voice Simulation completed: ${transcript.length} turns`);
+      return { success: true };
+
+    } catch (error) {
+      console.error(`[BatchedExecutor] Bolna Voice Simulation error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Execute Bolna Chat Simulation
+   * Simulates a chat conversation for Bolna agents
+   */
+  private async executeBolnaChatSimulation(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Starting Bolna Chat Simulation for batch: ${batch.name}`);
+
+      const { bolnaProvider } = await import('../providers/bolna.provider');
+
+      // Fetch Bolna agent configuration
+      const agent = await bolnaProvider.getAgent(agentConfig.apiKey, agentConfig.agentId);
+      if (!agent) {
+        return { success: false, error: 'Failed to fetch Bolna agent configuration' };
+      }
+
+      // Cast to access Bolna-specific properties
+      const bolnaAgent = agent as any;
+
+      // Extract system prompt
+      let systemPrompt = 'You are a helpful assistant.';
+      const llmTask = bolnaAgent.tasks?.find((t: any) => 
+        t.task_type === 'conversation' || t.task_type === 'llm'
+      );
+      if (llmTask?.task_config?.agent_prompt) {
+        systemPrompt = llmTask.task_config.agent_prompt;
+      }
+
+      // Build test caller prompt
+      const testCallerPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      const testCallerHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: testCallerPrompt }
+      ];
+
+      const agentHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: systemPrompt }
+      ];
+
+      const testedCases = new Set<string>();
+      let turnCount = 0;
+      const maxTurns = Math.min(batch.testCases.length * 3 + 5, 30);
+
+      while (turnCount < maxTurns && testedCases.size < batch.testCases.length) {
+        const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+        
+        const testCallerResponse = await this.generateBatchTestCallerResponse(
+          testCallerHistory,
+          remainingCases,
+          testedCases.size
+        );
+
+        if (!testCallerResponse.text || this.isGoodbyeMessage(testCallerResponse.text)) {
+          break;
+        }
+
+        agentHistory.push({ role: 'user', content: testCallerResponse.text });
+        const agentResponseText = await this.generateAgentSimulationResponse(agentHistory);
+        
+        if (!agentResponseText) break;
+
+        transcript.push({
+          role: 'test_caller',
+          content: testCallerResponse.text,
+          timestamp: Date.now(),
+          testCaseId: testCallerResponse.testCaseId,
+        });
+
+        transcript.push({
+          role: 'ai_agent',
+          content: agentResponseText,
+          timestamp: Date.now(),
+        });
+
+        agentHistory.push({ role: 'assistant', content: agentResponseText });
+        testCallerHistory.push({ role: 'user', content: agentResponseText });
+
+        if (testCallerResponse.testCaseId) {
+          testedCases.add(testCallerResponse.testCaseId);
+        }
+        testCallerHistory.push({ role: 'assistant', content: testCallerResponse.text });
+        turnCount++;
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`[BatchedExecutor] Bolna Chat Simulation completed: ${transcript.length} turns`);
+      return { success: true };
+
+    } catch (error) {
+      console.error(`[BatchedExecutor] Bolna Chat Simulation error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Execute LiveKit Voice Simulation
+   * Simulates a voice conversation for LiveKit-based agents using TTS + LLM
+   * Note: LiveKit is WebRTC-based and typically requires a running LiveKit agent
+   */
+  private async executeLiveKitVoiceSimulation(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[],
+    audioChunks: Buffer[],
+    userAudioChunks: Buffer[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Starting LiveKit Voice Simulation for batch: ${batch.name}`);
+      console.log(`[BatchedExecutor] LiveKit Agent ID: ${agentConfig.agentId}`);
+
+      const { livekitProvider } = await import('../providers/livekit.provider');
+      const { TTSService, DEFAULT_VOICES } = await import('./tts.service');
+
+      // Initialize TTS service
+      const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+      if (!elevenLabsApiKey) {
+        console.error('[BatchedExecutor] Missing ElevenLabs API key for voice simulation');
+        return this.executeLiveKitChatSimulation(batch, agentConfig, transcript);
+      }
+
+      const ttsService = new TTSService(elevenLabsApiKey);
+
+      // Fetch LiveKit agent configuration
+      const agent = await livekitProvider.getAgent(agentConfig.apiKey, agentConfig.agentId);
+      if (!agent) {
+        return { success: false, error: 'Failed to fetch LiveKit agent configuration' };
+      }
+
+      // Extract system prompt from agent metadata
+      const systemPrompt = agent.metadata?.system_prompt || 
+                          agent.metadata?.prompt ||
+                          'You are a helpful voice assistant.';
+      const beginMessage = agent.metadata?.initial_message || 'Hello! How can I help you today?';
+
+      const agentVoiceId = DEFAULT_VOICES.female;
+      const testCallerVoiceId = DEFAULT_VOICES.male;
+
+      console.log(`[BatchedExecutor] LiveKit agent loaded: ${agent.name}`);
+
+      // Build test caller prompt
+      const testCallerPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      const testCallerHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: testCallerPrompt }
+      ];
+
+      const agentHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: systemPrompt }
+      ];
+
+      const testedCases = new Set<string>();
+      let turnCount = 0;
+      const maxTurns = Math.min(batch.testCases.length * 3 + 5, 30);
+
+      // Start with agent's begin message
+      if (beginMessage) {
+        try {
+          const agentAudio = await ttsService.generateSpeech({
+            text: beginMessage,
+            voiceId: agentVoiceId,
+          });
+          audioChunks.push(agentAudio.audioBuffer);
+        } catch (ttsError) {
+          console.warn(`[BatchedExecutor] TTS failed for begin message:`, ttsError);
+        }
+
+        transcript.push({
+          role: 'ai_agent',
+          content: beginMessage,
+          timestamp: Date.now(),
+        });
+        agentHistory.push({ role: 'assistant', content: beginMessage });
+        testCallerHistory.push({ role: 'user', content: beginMessage });
+        turnCount++;
+      }
+
+      // Voice conversation loop
+      while (turnCount < maxTurns && testedCases.size < batch.testCases.length) {
+        const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+        
+        const testCallerResponse = await this.generateBatchTestCallerResponse(
+          testCallerHistory,
+          remainingCases,
+          testedCases.size
+        );
+
+        if (!testCallerResponse.text || this.isGoodbyeMessage(testCallerResponse.text)) {
+          break;
+        }
+
+        // Test caller TTS
+        try {
+          const testCallerAudio = await ttsService.generateSpeech({
+            text: testCallerResponse.text,
+            voiceId: testCallerVoiceId,
+          });
+          audioChunks.push(testCallerAudio.audioBuffer);
+          userAudioChunks.push(testCallerAudio.audioBuffer);
+        } catch (ttsError) {
+          console.warn(`[BatchedExecutor] Test caller TTS failed:`, ttsError);
+        }
+
+        // Agent response simulation
+        agentHistory.push({ role: 'user', content: testCallerResponse.text });
+        const agentResponseText = await this.generateAgentSimulationResponse(agentHistory);
+        
+        if (!agentResponseText) break;
+
+        // Agent TTS
+        try {
+          const agentAudio = await ttsService.generateSpeech({
+            text: agentResponseText,
+            voiceId: agentVoiceId,
+          });
+          audioChunks.push(agentAudio.audioBuffer);
+        } catch (ttsError) {
+          console.warn(`[BatchedExecutor] Agent TTS failed:`, ttsError);
+        }
+
+        // Add to transcript
+        transcript.push({
+          role: 'test_caller',
+          content: testCallerResponse.text,
+          timestamp: Date.now(),
+          testCaseId: testCallerResponse.testCaseId,
+        });
+
+        transcript.push({
+          role: 'ai_agent',
+          content: agentResponseText,
+          timestamp: Date.now(),
+        });
+
+        agentHistory.push({ role: 'assistant', content: agentResponseText });
+        testCallerHistory.push({ role: 'user', content: agentResponseText });
+
+        if (testCallerResponse.testCaseId) {
+          testedCases.add(testCallerResponse.testCaseId);
+        }
+        testCallerHistory.push({ role: 'assistant', content: testCallerResponse.text });
+        turnCount++;
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      console.log(`[BatchedExecutor] LiveKit Voice Simulation completed: ${transcript.length} turns`);
+      return { success: true };
+
+    } catch (error) {
+      console.error(`[BatchedExecutor] LiveKit Voice Simulation error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Execute LiveKit Chat Simulation
+   * Simulates a chat conversation for LiveKit-based agents
+   */
+  private async executeLiveKitChatSimulation(
+    batch: CallBatch,
+    agentConfig: { provider: string; agentId: string; apiKey: string },
+    transcript: ConversationTurn[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`[BatchedExecutor] Starting LiveKit Chat Simulation for batch: ${batch.name}`);
+
+      const { livekitProvider } = await import('../providers/livekit.provider');
+
+      // Fetch LiveKit agent configuration
+      const agent = await livekitProvider.getAgent(agentConfig.apiKey, agentConfig.agentId);
+      if (!agent) {
+        return { success: false, error: 'Failed to fetch LiveKit agent configuration' };
+      }
+
+      // Extract system prompt
+      const systemPrompt = agent.metadata?.system_prompt || 
+                          agent.metadata?.prompt ||
+                          'You are a helpful assistant.';
+
+      // Build test caller prompt
+      const testCallerPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      const testCallerHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: testCallerPrompt }
+      ];
+
+      const agentHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: systemPrompt }
+      ];
+
+      const testedCases = new Set<string>();
+      let turnCount = 0;
+      const maxTurns = Math.min(batch.testCases.length * 3 + 5, 30);
+
+      while (turnCount < maxTurns && testedCases.size < batch.testCases.length) {
+        const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
+        
+        const testCallerResponse = await this.generateBatchTestCallerResponse(
+          testCallerHistory,
+          remainingCases,
+          testedCases.size
+        );
+
+        if (!testCallerResponse.text || this.isGoodbyeMessage(testCallerResponse.text)) {
+          break;
+        }
+
+        agentHistory.push({ role: 'user', content: testCallerResponse.text });
+        const agentResponseText = await this.generateAgentSimulationResponse(agentHistory);
+        
+        if (!agentResponseText) break;
+
+        transcript.push({
+          role: 'test_caller',
+          content: testCallerResponse.text,
+          timestamp: Date.now(),
+          testCaseId: testCallerResponse.testCaseId,
+        });
+
+        transcript.push({
+          role: 'ai_agent',
+          content: agentResponseText,
+          timestamp: Date.now(),
+        });
+
+        agentHistory.push({ role: 'assistant', content: agentResponseText });
+        testCallerHistory.push({ role: 'user', content: agentResponseText });
+
+        if (testCallerResponse.testCaseId) {
+          testedCases.add(testCallerResponse.testCaseId);
+        }
+        testCallerHistory.push({ role: 'assistant', content: testCallerResponse.text });
+        turnCount++;
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`[BatchedExecutor] LiveKit Chat Simulation completed: ${transcript.length} turns`);
+      return { success: true };
+
+    } catch (error) {
+      console.error(`[BatchedExecutor] LiveKit Chat Simulation error:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
   }
 }
 

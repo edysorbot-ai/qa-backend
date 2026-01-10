@@ -12,3 +12,5 @@ export { conversationalTestAgent } from './conversational-test-agent.service';
 export { promptSuggestionService } from './prompt-suggestion.service';
 export { intelligentBatchingService, type IntelligentBatch, type BatchingResult } from './intelligent-batching.service';
 export { teamMemberService } from './teamMember.service';
+export { logger, logBuffer, getLogStats, searchLogs, setCorrelationId } from './logger.service';
+export { encryptionService } from './encryption.service';

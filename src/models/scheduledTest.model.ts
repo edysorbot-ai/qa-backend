@@ -1,4 +1,4 @@
-import { pool } from "../db";
+import { pool, queryWithRetry } from "../db";
 
 export interface ScheduledTest {
   id: string;
@@ -15,6 +15,11 @@ export interface ScheduledTest {
   scheduled_date?: string; // For "once" type - ISO date
   scheduled_days?: number[]; // For "weekly" type - 0-6 (Sun-Sat)
   timezone: string;
+  // Schedule end options for recurring schedules (daily/weekly)
+  ends_type: "never" | "on" | "after"; // When the schedule should end
+  ends_on_date?: string; // End date for "on" type - ISO date
+  ends_after_occurrences?: number; // Number of occurrences for "after" type
+  completed_occurrences: number; // Track completed runs for "after" type
   enable_batching: boolean;
   enable_concurrency: boolean;
   concurrency_count: number;
@@ -44,6 +49,10 @@ export const ScheduledTestModel = {
         scheduled_date DATE,
         scheduled_days INTEGER[],
         timezone VARCHAR(50) DEFAULT 'UTC',
+        ends_type VARCHAR(20) DEFAULT 'never' CHECK (ends_type IN ('never', 'on', 'after')),
+        ends_on_date DATE,
+        ends_after_occurrences INTEGER,
+        completed_occurrences INTEGER DEFAULT 0,
         enable_batching BOOLEAN DEFAULT true,
         enable_concurrency BOOLEAN DEFAULT false,
         concurrency_count INTEGER DEFAULT 1,
@@ -76,6 +85,9 @@ export const ScheduledTestModel = {
     scheduledDate?: string;
     scheduledDays?: number[];
     timezone?: string;
+    endsType?: "never" | "on" | "after";
+    endsOnDate?: string;
+    endsAfterOccurrences?: number;
     enableBatching?: boolean;
     enableConcurrency?: boolean;
     concurrencyCount?: number;
@@ -85,15 +97,18 @@ export const ScheduledTestModel = {
       data.scheduledTime,
       data.scheduledDate,
       data.scheduledDays,
-      data.timezone || "UTC"
+      data.timezone || "UTC",
+      data.endsType,
+      data.endsOnDate
     );
 
     const query = `
       INSERT INTO scheduled_tests (
         user_id, name, agent_id, agent_name, provider, integration_id, external_agent_id,
         batches, schedule_type, scheduled_time, scheduled_date, scheduled_days,
-        timezone, enable_batching, enable_concurrency, concurrency_count, next_run_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        timezone, ends_type, ends_on_date, ends_after_occurrences, completed_occurrences,
+        enable_batching, enable_concurrency, concurrency_count, next_run_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
       RETURNING *
     `;
 
@@ -111,6 +126,10 @@ export const ScheduledTestModel = {
       data.scheduledDate || null,
       data.scheduledDays || null,
       data.timezone || "UTC",
+      data.endsType || "never",
+      data.endsOnDate || null,
+      data.endsAfterOccurrences || null,
+      0, // completed_occurrences starts at 0
       data.enableBatching ?? true,
       data.enableConcurrency ?? false,
       data.concurrencyCount || 1,
@@ -149,7 +168,8 @@ export const ScheduledTestModel = {
         AND next_run_at <= NOW()
       ORDER BY next_run_at ASC
     `;
-    const result = await pool.query(query);
+    // Use retry logic for scheduler queries to handle Neon cold starts
+    const result = await queryWithRetry(query);
     return result.rows.map(this.formatScheduledTest);
   },
 
@@ -174,19 +194,50 @@ export const ScheduledTestModel = {
     const test = result.rows[0];
     let nextRunAt: Date | null = null;
     let newStatus = test.status;
+    const newCompletedOccurrences = (test.completed_occurrences || 0) + 1;
 
     if (test.schedule_type === "once") {
       // One-time schedule is completed
       newStatus = "completed";
     } else {
-      // Calculate next run for recurring schedules
-      nextRunAt = this.calculateNextRun(
-        test.schedule_type,
-        test.scheduled_time,
-        null,
-        test.scheduled_days,
-        test.timezone
-      );
+      // Check if schedule should end for recurring schedules
+      let shouldEnd = false;
+
+      // Check "after X occurrences" end type
+      if (test.ends_type === "after" && test.ends_after_occurrences) {
+        if (newCompletedOccurrences >= test.ends_after_occurrences) {
+          shouldEnd = true;
+        }
+      }
+
+      // Check "on date" end type
+      if (test.ends_type === "on" && test.ends_on_date) {
+        const endDate = new Date(test.ends_on_date);
+        endDate.setHours(23, 59, 59, 999); // End of the day
+        if (new Date() > endDate) {
+          shouldEnd = true;
+        }
+      }
+
+      if (shouldEnd) {
+        newStatus = "completed";
+      } else {
+        // Calculate next run for recurring schedules
+        nextRunAt = this.calculateNextRun(
+          test.schedule_type,
+          test.scheduled_time,
+          null,
+          test.scheduled_days,
+          test.timezone,
+          test.ends_type,
+          test.ends_on_date
+        );
+        
+        // If no valid next run (e.g., end date has passed), mark as completed
+        if (!nextRunAt) {
+          newStatus = "completed";
+        }
+      }
     }
 
     const updateQuery = `
@@ -194,10 +245,11 @@ export const ScheduledTestModel = {
       SET last_run_at = NOW(),
           next_run_at = $1,
           status = $2,
+          completed_occurrences = $3,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $3
+      WHERE id = $4
     `;
-    await pool.query(updateQuery, [nextRunAt, newStatus, id]);
+    await pool.query(updateQuery, [nextRunAt, newStatus, newCompletedOccurrences, id]);
   },
 
   // Delete a scheduled test
@@ -222,6 +274,9 @@ export const ScheduledTestModel = {
       scheduledDate?: string;
       scheduledDays?: number[];
       timezone?: string;
+      endsType?: "never" | "on" | "after";
+      endsOnDate?: string;
+      endsAfterOccurrences?: number;
       status: "active" | "paused" | "completed";
     }>
   ): Promise<ScheduledTest | null> {
@@ -253,6 +308,20 @@ export const ScheduledTestModel = {
       updates.push(`timezone = $${paramCount++}`);
       values.push(data.timezone);
     }
+    if (data.endsType !== undefined) {
+      updates.push(`ends_type = $${paramCount++}`);
+      values.push(data.endsType);
+      // Reset completed occurrences when changing end type
+      updates.push(`completed_occurrences = 0`);
+    }
+    if (data.endsOnDate !== undefined) {
+      updates.push(`ends_on_date = $${paramCount++}`);
+      values.push(data.endsOnDate || null);
+    }
+    if (data.endsAfterOccurrences !== undefined) {
+      updates.push(`ends_after_occurrences = $${paramCount++}`);
+      values.push(data.endsAfterOccurrences || null);
+    }
     if (data.status !== undefined) {
       updates.push(`status = $${paramCount++}`);
       values.push(data.status);
@@ -263,7 +332,7 @@ export const ScheduledTestModel = {
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
 
     // Recalculate next_run_at if schedule changed
-    if (data.scheduleType || data.scheduledTime || data.scheduledDate || data.scheduledDays) {
+    if (data.scheduleType || data.scheduledTime || data.scheduledDate || data.scheduledDays || data.endsType || data.endsOnDate) {
       const getQuery = `SELECT * FROM scheduled_tests WHERE id = $1 AND user_id = $2`;
       const current = await pool.query(getQuery, [id, userId]);
       if (current.rows[0]) {
@@ -273,7 +342,9 @@ export const ScheduledTestModel = {
           data.scheduledTime || test.scheduled_time,
           data.scheduledDate || test.scheduled_date,
           data.scheduledDays || test.scheduled_days,
-          data.timezone || test.timezone
+          data.timezone || test.timezone,
+          data.endsType || test.ends_type,
+          data.endsOnDate !== undefined ? data.endsOnDate : test.ends_on_date
         );
         updates.push(`next_run_at = $${paramCount++}`);
         values.push(nextRunAt);
@@ -299,10 +370,22 @@ export const ScheduledTestModel = {
     scheduledTime: string,
     scheduledDate?: string | null,
     scheduledDays?: number[] | null,
-    timezone: string = "UTC"
+    timezone: string = "UTC",
+    endsType?: "never" | "on" | "after" | null,
+    endsOnDate?: string | null
   ): Date | null {
     const [hours, minutes] = scheduledTime.split(":").map(Number);
     const now = new Date();
+
+    // Helper to check if a date is valid (not past the end date)
+    const isValidDate = (date: Date): boolean => {
+      if (endsType === "on" && endsOnDate) {
+        const endDate = new Date(endsOnDate);
+        endDate.setHours(23, 59, 59, 999); // End of the day
+        return date <= endDate;
+      }
+      return true;
+    };
 
     if (scheduleType === "once" && scheduledDate) {
       const runDate = new Date(scheduledDate);
@@ -314,12 +397,15 @@ export const ScheduledTestModel = {
       const today = new Date();
       today.setHours(hours, minutes, 0, 0);
       
-      if (today > now) {
+      if (today > now && isValidDate(today)) {
         return today;
       }
       // Schedule for tomorrow
       today.setDate(today.getDate() + 1);
-      return today;
+      if (isValidDate(today)) {
+        return today;
+      }
+      return null; // End date has passed
     }
 
     if (scheduleType === "weekly" && scheduledDays && scheduledDays.length > 0) {
@@ -335,7 +421,9 @@ export const ScheduledTestModel = {
           const nextRun = new Date();
           nextRun.setDate(nextRun.getDate() + daysUntil);
           nextRun.setHours(hours, minutes, 0, 0);
-          return nextRun;
+          if (isValidDate(nextRun)) {
+            return nextRun;
+          }
         }
       }
 
@@ -344,7 +432,10 @@ export const ScheduledTestModel = {
       const nextRun = new Date();
       nextRun.setDate(nextRun.getDate() + daysUntil);
       nextRun.setHours(hours, minutes, 0, 0);
-      return nextRun;
+      if (isValidDate(nextRun)) {
+        return nextRun;
+      }
+      return null; // End date has passed
     }
 
     return null;
@@ -367,6 +458,10 @@ export const ScheduledTestModel = {
       scheduled_date: row.scheduled_date,
       scheduled_days: row.scheduled_days,
       timezone: row.timezone,
+      ends_type: row.ends_type || "never",
+      ends_on_date: row.ends_on_date,
+      ends_after_occurrences: row.ends_after_occurrences,
+      completed_occurrences: row.completed_occurrences || 0,
       enable_batching: row.enable_batching,
       enable_concurrency: row.enable_concurrency,
       concurrency_count: row.concurrency_count,

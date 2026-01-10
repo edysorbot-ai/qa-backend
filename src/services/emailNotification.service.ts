@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import { config } from '../config';
 import { FailedTestAlertPayload } from '../models/alertSettings.model';
 import { alertSettingsService } from './alertSettings.service';
+import { slackNotificationService } from './slackNotification.service';
 import pool from '../db';
 
 export class EmailNotificationService {
@@ -177,8 +178,21 @@ export class EmailNotificationService {
    * Check if a user should receive failure alerts and send if needed
    */
   async notifyUserOfTestFailure(userId: string, payload: FailedTestAlertPayload): Promise<boolean> {
+    console.log(`[EmailNotificationService] ========== NOTIFYING USER ==========`);
+    console.log(`[EmailNotificationService] User ID: ${userId}`);
+    console.log(`[EmailNotificationService] Is Scheduled Run: ${payload.isScheduledRun}`);
+    console.log(`[EmailNotificationService] Failed Tests Count: ${payload.failedTests.length}`);
+    
     try {
       const alertSettings = await alertSettingsService.getEnabledAlertSettingsForUser(userId);
+      
+      console.log(`[EmailNotificationService] Alert Settings:`, alertSettings ? {
+        enabled: alertSettings.enabled,
+        notify_on_test_failure: alertSettings.notify_on_test_failure,
+        notify_on_scheduled_failure: alertSettings.notify_on_scheduled_failure,
+        email_configs: alertSettings.email_configs,
+        email_addresses: alertSettings.email_addresses
+      } : 'NOT FOUND OR DISABLED');
       
       if (!alertSettings) {
         console.log(`[EmailNotificationService] No alert settings or alerts disabled for user ${userId}`);
@@ -196,15 +210,40 @@ export class EmailNotificationService {
         return false;
       }
 
-      // Send to all configured email addresses
-      const emails = alertSettings.email_addresses;
+      // Get enabled email addresses from email_configs
+      // email_configs contains objects like { email, enabled, type, name }
+      const emailConfigs = alertSettings.email_configs || [];
+      const emails = emailConfigs
+        .filter((config: any) => config.enabled)
+        .map((config: any) => config.email);
       
-      if (emails.length === 0) {
+      // Also check legacy email_addresses field as fallback
+      if (emails.length === 0 && alertSettings.email_addresses?.length > 0) {
+        emails.push(...alertSettings.email_addresses);
+      }
+      
+      let emailSent = false;
+      let slackSent = false;
+
+      // Send email notifications
+      if (emails.length > 0) {
+        console.log(`[EmailNotificationService] Sending failure alert to emails: ${emails.join(', ')}`);
+        emailSent = await this.sendFailureAlert(payload, emails);
+      } else {
         console.log(`[EmailNotificationService] No email addresses configured for user ${userId}`);
-        return false;
       }
 
-      return await this.sendFailureAlert(payload, emails);
+      // Send Slack notification if enabled
+      if (alertSettings.slack_enabled && alertSettings.slack_webhook_url) {
+        console.log(`[EmailNotificationService] Sending Slack notification for user ${userId}`);
+        slackSent = await slackNotificationService.sendFailureAlert(
+          payload, 
+          alertSettings.slack_webhook_url,
+          alertSettings.slack_channel || undefined
+        );
+      }
+
+      return emailSent || slackSent;
     } catch (error) {
       console.error('[EmailNotificationService] Error notifying user of failure:', error);
       return false;
@@ -216,6 +255,9 @@ export class EmailNotificationService {
    * This is the main entry point called when test runs complete
    */
   async checkAndNotifyTestRunFailures(testRunId: string): Promise<boolean> {
+    console.log(`[EmailNotificationService] ========== CHECKING TEST RUN FAILURES ==========`);
+    console.log(`[EmailNotificationService] Test Run ID: ${testRunId}`);
+    
     try {
       // Get test run details
       const testRunResult = await pool.query(
@@ -232,6 +274,14 @@ export class EmailNotificationService {
       }
 
       const testRun = testRunResult.rows[0];
+      console.log(`[EmailNotificationService] Test Run Found:`, {
+        id: testRun.id,
+        name: testRun.name,
+        user_id: testRun.user_id,
+        failed_tests: testRun.failed_tests,
+        total_tests: testRun.total_tests
+      });
+      
       const failedTests = testRun.failed_tests || 0;
 
       // No failures, no notification needed

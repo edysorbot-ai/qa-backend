@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { alertSettingsService } from '../services/alertSettings.service';
 import { userService } from '../services/user.service';
 import { teamMemberService } from '../services/teamMember.service';
+import { slackNotificationService } from '../services/slackNotification.service';
 
 const router = Router();
 
@@ -58,6 +59,9 @@ router.get('/', async (req: Request, res: Response) => {
         email_configs: [],
         notify_on_test_failure: true,
         notify_on_scheduled_failure: true,
+        slack_enabled: false,
+        slack_webhook_url: null,
+        slack_channel: null,
         created_at: new Date(),
         updated_at: new Date(),
       };
@@ -263,6 +267,108 @@ router.post('/remove-email', async (req: Request, res: Response) => {
     res.json({ settings: updatedSettings, message: 'Email removed successfully' });
   } catch (error) {
     console.error('Error removing email:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/**
+ * @swagger
+ * /api/alert-settings/slack/test:
+ *   post:
+ *     summary: Test Slack webhook connection
+ *     tags: [Alert Settings]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               webhook_url:
+ *                 type: string
+ *               channel:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Test result
+ */
+router.post('/slack/test', async (req: Request, res: Response) => {
+  try {
+    const userId = await getUserIdFromRequest(req);
+    if (!userId) {
+      return res.status(401).json({ message: 'User not authenticated' });
+    }
+
+    const { webhook_url, channel } = req.body;
+
+    if (!webhook_url) {
+      return res.status(400).json({ message: 'Webhook URL is required' });
+    }
+
+    const result = await slackNotificationService.testConnection(webhook_url, channel);
+    
+    if (result.success) {
+      res.json({ success: true, message: result.message });
+    } else {
+      res.status(400).json({ success: false, message: result.message });
+    }
+  } catch (error) {
+    console.error('Error testing Slack connection:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/**
+ * @swagger
+ * /api/alert-settings/slack:
+ *   put:
+ *     summary: Update Slack settings
+ *     tags: [Alert Settings]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               slack_enabled:
+ *                 type: boolean
+ *               slack_webhook_url:
+ *                 type: string
+ *               slack_channel:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Slack settings updated successfully
+ */
+router.put('/slack', async (req: Request, res: Response) => {
+  try {
+    const userId = await getUserIdFromRequest(req);
+    if (!userId) {
+      return res.status(401).json({ message: 'User not authenticated' });
+    }
+
+    const effectiveUserId = await getEffectiveUserId(userId);
+    const { slack_enabled, slack_webhook_url, slack_channel } = req.body;
+
+    // Validate webhook URL if enabling
+    if (slack_enabled && slack_webhook_url && !slack_webhook_url.startsWith('https://hooks.slack.com/')) {
+      return res.status(400).json({ message: 'Invalid Slack webhook URL' });
+    }
+
+    const settings = await alertSettingsService.upsert(effectiveUserId, {
+      slack_enabled,
+      slack_webhook_url,
+      slack_channel,
+    });
+
+    res.json({ settings, message: 'Slack settings updated successfully' });
+  } catch (error) {
+    console.error('Error updating Slack settings:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

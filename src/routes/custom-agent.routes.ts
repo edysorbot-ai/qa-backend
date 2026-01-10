@@ -7,6 +7,10 @@
 
 import { Router } from 'express';
 import { customAgentController } from '../controllers/custom-agent.controller';
+import { 
+  requireSubscriptionAndCredits,
+  FeatureKeys 
+} from '../middleware/credits.middleware';
 
 const router = Router();
 
@@ -22,8 +26,11 @@ router.get('/config/voices', customAgentController.getAvailableVoices);
 // List all custom agents for the user
 router.get('/', customAgentController.getAll);
 
-// Create a new custom agent
-router.post('/', customAgentController.create);
+// Create a new custom agent (requires subscription and credits)
+router.post('/', 
+  ...requireSubscriptionAndCredits(FeatureKeys.CUSTOM_AGENT_CREATE),
+  customAgentController.create
+);
 
 // Get a specific custom agent
 router.get('/:id', customAgentController.getById);
@@ -34,10 +41,16 @@ router.put('/:id', customAgentController.update);
 // Delete a custom agent
 router.delete('/:id', customAgentController.delete);
 
-// Chat with a custom agent (for testing)
-router.post('/:id/chat', customAgentController.chat);
+// Chat with a custom agent (for testing) - requires subscription and credits
+router.post('/:id/chat', 
+  ...requireSubscriptionAndCredits(FeatureKeys.CUSTOM_AGENT_SIMULATE),
+  customAgentController.chat
+);
 
-// Run a multi-turn conversation simulation
-router.post('/:id/simulate', customAgentController.simulate);
+// Run a multi-turn conversation simulation - requires subscription and credits
+router.post('/:id/simulate', 
+  ...requireSubscriptionAndCredits(FeatureKeys.CUSTOM_AGENT_SIMULATE),
+  customAgentController.simulate
+);
 
 export default router;

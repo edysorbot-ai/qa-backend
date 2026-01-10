@@ -1,6 +1,10 @@
 import { Router, Request, Response } from "express";
 import { ScheduledTestModel } from "../models/scheduledTest.model";
 import { userService } from "../services/user.service";
+import { 
+  requireSubscriptionAndCredits,
+  FeatureKeys 
+} from '../middleware/credits.middleware';
 
 const router = Router();
 
@@ -50,8 +54,10 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// Create a new scheduled test
-router.post("/", async (req: Request, res: Response) => {
+// Create a new scheduled test (requires subscription and credits)
+router.post("/", 
+  ...requireSubscriptionAndCredits(FeatureKeys.SCHEDULED_TEST_CREATE),
+  async (req: Request, res: Response) => {
   try {
     const userId = await getUserId(req);
     const {
@@ -67,6 +73,9 @@ router.post("/", async (req: Request, res: Response) => {
       scheduledDate,
       scheduledDays,
       timezone,
+      endsType,
+      endsOnDate,
+      endsAfterOccurrences,
       enableBatching,
       enableConcurrency,
       concurrencyCount,
@@ -86,6 +95,16 @@ router.post("/", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "At least one day must be selected for weekly schedules" });
     }
 
+    // Validate end options for recurring schedules
+    if ((scheduleType === "daily" || scheduleType === "weekly") && endsType) {
+      if (endsType === "on" && !endsOnDate) {
+        return res.status(400).json({ error: "End date is required when 'ends on' is selected" });
+      }
+      if (endsType === "after" && (!endsAfterOccurrences || endsAfterOccurrences < 1)) {
+        return res.status(400).json({ error: "Number of occurrences must be at least 1" });
+      }
+    }
+
     const scheduledTest = await ScheduledTestModel.create({
       userId,
       name,
@@ -100,6 +119,9 @@ router.post("/", async (req: Request, res: Response) => {
       scheduledDate,
       scheduledDays,
       timezone: timezone || "UTC",
+      endsType: endsType || "never",
+      endsOnDate,
+      endsAfterOccurrences,
       enableBatching: enableBatching ?? true,
       enableConcurrency: enableConcurrency ?? false,
       concurrencyCount: concurrencyCount || 1,

@@ -5,6 +5,12 @@ export interface EmailConfig {
   name?: string;
 }
 
+export interface SlackConfig {
+  enabled: boolean;
+  webhook_url: string;
+  channel?: string;
+}
+
 export interface AlertSettings {
   id: string;
   user_id: string;
@@ -13,6 +19,9 @@ export interface AlertSettings {
   email_configs: EmailConfig[];
   notify_on_test_failure: boolean;
   notify_on_scheduled_failure: boolean;
+  slack_enabled: boolean;
+  slack_webhook_url: string | null;
+  slack_channel: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -24,6 +33,9 @@ export interface CreateAlertSettingsDTO {
   email_configs?: EmailConfig[];
   notify_on_test_failure?: boolean;
   notify_on_scheduled_failure?: boolean;
+  slack_enabled?: boolean;
+  slack_webhook_url?: string;
+  slack_channel?: string;
 }
 
 export interface UpdateAlertSettingsDTO {
@@ -32,6 +44,9 @@ export interface UpdateAlertSettingsDTO {
   email_configs?: EmailConfig[];
   notify_on_test_failure?: boolean;
   notify_on_scheduled_failure?: boolean;
+  slack_enabled?: boolean;
+  slack_webhook_url?: string;
+  slack_channel?: string;
 }
 
 export interface FailedTestAlertPayload {

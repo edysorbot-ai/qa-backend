@@ -6,6 +6,7 @@ import { configVersionService } from '../services/configVersion.service';
 import { integrationService } from '../services/integration.service';
 import { elevenlabsProvider } from '../providers/elevenlabs.provider';
 import { teamMemberService } from '../services/teamMember.service';
+import { deductCreditsAfterSuccess, CreditRequest } from '../middleware/credits.middleware';
 
 export class AgentController {
   async getAll(req: Request, res: Response, next: NextFunction) {
@@ -84,6 +85,13 @@ export class AgentController {
           config,
         });
       }
+
+      // Deduct credits after successful creation
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Created agent: ${name}`,
+        { agentId: agent.id, provider }
+      );
 
       res.status(201).json({ agent });
     } catch (error) {
@@ -325,6 +333,13 @@ export class AgentController {
         }))
       );
 
+      // Deduct credits for generated test cases
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Generated ${savedTestCases.length} test cases for agent: ${agent.name}`,
+        { agentId: id, testCaseCount: savedTestCases.length }
+      );
+
       res.json({
         agentAnalysis: result.agentAnalysis,
         testCases: savedTestCases,
@@ -387,6 +402,13 @@ export class AgentController {
           priority: tc.priority || 'medium',
           batch_compatible: true,
         }))
+      );
+
+      // Deduct credits for saved test cases
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Saved ${createdTestCases.length} test cases for agent: ${agent.name}`,
+        { agentId: id, testCaseCount: createdTestCases.length }
       );
 
       res.json({ testCases: createdTestCases });

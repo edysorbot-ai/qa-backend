@@ -17,8 +17,8 @@ export class AlertSettingsService {
 
   async create(data: CreateAlertSettingsDTO): Promise<AlertSettings> {
     const result = await query(
-      `INSERT INTO alert_settings (user_id, enabled, email_addresses, email_configs, notify_on_test_failure, notify_on_scheduled_failure)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO alert_settings (user_id, enabled, email_addresses, email_configs, notify_on_test_failure, notify_on_scheduled_failure, slack_enabled, slack_webhook_url, slack_channel)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         data.user_id,
@@ -26,7 +26,10 @@ export class AlertSettingsService {
         data.email_addresses ?? [],
         JSON.stringify(data.email_configs ?? []),
         data.notify_on_test_failure ?? true,
-        data.notify_on_scheduled_failure ?? true
+        data.notify_on_scheduled_failure ?? true,
+        data.slack_enabled ?? false,
+        data.slack_webhook_url ?? null,
+        data.slack_channel ?? null
       ]
     );
     return result.rows[0];
@@ -56,6 +59,18 @@ export class AlertSettingsService {
     if (data.notify_on_scheduled_failure !== undefined) {
       fields.push(`notify_on_scheduled_failure = $${paramCount++}`);
       values.push(data.notify_on_scheduled_failure);
+    }
+    if (data.slack_enabled !== undefined) {
+      fields.push(`slack_enabled = $${paramCount++}`);
+      values.push(data.slack_enabled);
+    }
+    if (data.slack_webhook_url !== undefined) {
+      fields.push(`slack_webhook_url = $${paramCount++}`);
+      values.push(data.slack_webhook_url || null);
+    }
+    if (data.slack_channel !== undefined) {
+      fields.push(`slack_channel = $${paramCount++}`);
+      values.push(data.slack_channel || null);
     }
 
     if (fields.length === 0) return this.findByUserId(userId);
