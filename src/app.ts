@@ -29,9 +29,24 @@ app.use(helmet({
 }));
 
 // CORS configuration
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',').filter(Boolean)
+  : [
+      'https://qa-frontend-dusky.vercel.app',
+      'https://qa-frontend.vercel.app',
+      process.env.FRONTEND_URL || 'http://localhost:3000',
+    ].filter(Boolean);
+
 app.use(cors({
   origin: isProduction 
-    ? (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean)
+    ? (origin, callback) => {
+        // Allow requests with no origin (like mobile apps or curl)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.some(allowed => origin.startsWith(allowed.replace(/\/$/, '')))) {
+          return callback(null, true);
+        }
+        callback(new Error('Not allowed by CORS'));
+      }
     : true, // Allow all origins in development
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
