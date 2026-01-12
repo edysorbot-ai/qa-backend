@@ -377,50 +377,104 @@ export const ScheduledTestModel = {
     const [hours, minutes] = scheduledTime.split(":").map(Number);
     const now = new Date();
 
+    // Helper to create a date in the user's timezone and convert to UTC
+    const createDateInTimezone = (year: number, month: number, day: number, hour: number, minute: number): Date => {
+      // Create an ISO string representing the time in the user's timezone
+      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
+      
+      // Get the offset for the target timezone
+      const targetDate = new Date(dateStr);
+      const utcDate = new Date(targetDate.toLocaleString('en-US', { timeZone: 'UTC' }));
+      const tzDate = new Date(targetDate.toLocaleString('en-US', { timeZone: timezone }));
+      const offset = utcDate.getTime() - tzDate.getTime();
+      
+      // Apply the offset to get the correct UTC time
+      return new Date(targetDate.getTime() + offset);
+    };
+
+    // Helper to get current date/time in user's timezone
+    const getNowInTimezone = (): { year: number; month: number; day: number; hours: number; minutes: number; dayOfWeek: number } => {
+      const options: Intl.DateTimeFormatOptions = {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        weekday: 'short'
+      };
+      const formatter = new Intl.DateTimeFormat('en-US', options);
+      const parts = formatter.formatToParts(now);
+      
+      const getValue = (type: string): string => parts.find(p => p.type === type)?.value || '0';
+      const dayOfWeekMap: { [key: string]: number } = { 'Sun': 0, 'Mon': 1, 'Tue': 2, 'Wed': 3, 'Thu': 4, 'Fri': 5, 'Sat': 6 };
+      
+      return {
+        year: parseInt(getValue('year')),
+        month: parseInt(getValue('month')) - 1, // 0-indexed
+        day: parseInt(getValue('day')),
+        hours: parseInt(getValue('hour')),
+        minutes: parseInt(getValue('minute')),
+        dayOfWeek: dayOfWeekMap[getValue('weekday')] ?? 0
+      };
+    };
+
     // Helper to check if a date is valid (not past the end date)
     const isValidDate = (date: Date): boolean => {
       if (endsType === "on" && endsOnDate) {
-        const endDate = new Date(endsOnDate);
-        endDate.setHours(23, 59, 59, 999); // End of the day
+        // Parse end date in user's timezone (end of day)
+        const [endYear, endMonth, endDay] = endsOnDate.split('-').map(Number);
+        const endDate = createDateInTimezone(endYear, endMonth - 1, endDay, 23, 59);
         return date <= endDate;
       }
       return true;
     };
 
     if (scheduleType === "once" && scheduledDate) {
-      const runDate = new Date(scheduledDate);
-      runDate.setHours(hours, minutes, 0, 0);
+      // Parse the scheduled date (YYYY-MM-DD format)
+      const [year, month, day] = scheduledDate.split('-').map(Number);
+      const runDate = createDateInTimezone(year, month - 1, day, hours, minutes);
       return runDate > now ? runDate : null;
     }
 
     if (scheduleType === "daily") {
-      const today = new Date();
-      today.setHours(hours, minutes, 0, 0);
+      const nowInTz = getNowInTimezone();
+      const currentTimeMinutes = nowInTz.hours * 60 + nowInTz.minutes;
+      const scheduledMinutes = hours * 60 + minutes;
       
-      if (today > now && isValidDate(today)) {
-        return today;
+      // Check if we can schedule for today
+      if (scheduledMinutes > currentTimeMinutes) {
+        const todayRun = createDateInTimezone(nowInTz.year, nowInTz.month, nowInTz.day, hours, minutes);
+        if (isValidDate(todayRun)) {
+          return todayRun;
+        }
       }
+      
       // Schedule for tomorrow
-      today.setDate(today.getDate() + 1);
-      if (isValidDate(today)) {
-        return today;
+      const tomorrow = new Date(now);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowInTz = getNowInTimezone();
+      // Advance by one day from current timezone date
+      const tomorrowRun = createDateInTimezone(nowInTz.year, nowInTz.month, nowInTz.day + 1, hours, minutes);
+      if (isValidDate(tomorrowRun)) {
+        return tomorrowRun;
       }
       return null; // End date has passed
     }
 
     if (scheduleType === "weekly" && scheduledDays && scheduledDays.length > 0) {
       const sortedDays = [...scheduledDays].sort((a, b) => a - b);
-      const currentDay = now.getDay();
-      const currentTime = now.getHours() * 60 + now.getMinutes();
+      const nowInTz = getNowInTimezone();
+      const currentDay = nowInTz.dayOfWeek;
+      const currentTimeMinutes = nowInTz.hours * 60 + nowInTz.minutes;
       const scheduledMinutes = hours * 60 + minutes;
 
       // Find the next scheduled day
       for (const day of sortedDays) {
-        if (day > currentDay || (day === currentDay && scheduledMinutes > currentTime)) {
+        if (day > currentDay || (day === currentDay && scheduledMinutes > currentTimeMinutes)) {
           const daysUntil = day - currentDay;
-          const nextRun = new Date();
-          nextRun.setDate(nextRun.getDate() + daysUntil);
-          nextRun.setHours(hours, minutes, 0, 0);
+          const nextRun = createDateInTimezone(nowInTz.year, nowInTz.month, nowInTz.day + daysUntil, hours, minutes);
           if (isValidDate(nextRun)) {
             return nextRun;
           }
@@ -429,9 +483,7 @@ export const ScheduledTestModel = {
 
       // Wrap to next week
       const daysUntil = 7 - currentDay + sortedDays[0];
-      const nextRun = new Date();
-      nextRun.setDate(nextRun.getDate() + daysUntil);
-      nextRun.setHours(hours, minutes, 0, 0);
+      const nextRun = createDateInTimezone(nowInTz.year, nowInTz.month, nowInTz.day + daysUntil, hours, minutes);
       if (isValidDate(nextRun)) {
         return nextRun;
       }
