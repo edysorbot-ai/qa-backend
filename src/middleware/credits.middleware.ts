@@ -114,28 +114,35 @@ export async function deductCredits(
   try {
     await client.query('BEGIN');
 
-    // Check current credits
-    const creditsResult = await client.query(`
-      SELECT uc.current_credits, cp.is_unlimited 
+    // First, lock the user_credits row
+    const lockResult = await client.query(`
+      SELECT uc.current_credits, uc.package_id
       FROM user_credits uc
-      LEFT JOIN credit_packages cp ON uc.package_id = cp.id
       WHERE uc.user_id = $1
       FOR UPDATE
     `, [userId]);
 
-    const row = creditsResult.rows[0];
-    if (!row) {
+    if (!lockResult.rows[0]) {
       await client.query('ROLLBACK');
       return false;
     }
 
+    const userCredits = lockResult.rows[0];
+
+    // Then check if package is unlimited (separate query, no FOR UPDATE needed)
+    const packageResult = await client.query(`
+      SELECT is_unlimited FROM credit_packages WHERE id = $1
+    `, [userCredits.package_id]);
+
+    const isUnlimited = packageResult.rows[0]?.is_unlimited || false;
+
     // Skip deduction for unlimited packages
-    if (row.is_unlimited) {
+    if (isUnlimited) {
       await client.query('COMMIT');
       return true;
     }
 
-    if (row.current_credits < amount) {
+    if (userCredits.current_credits < amount) {
       await client.query('ROLLBACK');
       return false;
     }
