@@ -217,14 +217,17 @@ export class SchedulerService {
       }
 
       const agent = agentResult.rows[0];
+      logger.scheduler.info(`Agent found: ${agent.name}`, { scheduledTestId: scheduledTest.id });
 
       // Deduct credits before starting
+      logger.scheduler.info(`Deducting credits for ${testCaseCount} test cases...`, { scheduledTestId: scheduledTest.id });
       const creditDeducted = await deductCredits(
         scheduledTest.user_id,
         testCaseCount, // Simplified: 1 credit per test case
         `Scheduled test: ${scheduledTest.name}`,
         { scheduledTestId: scheduledTest.id, testCaseCount }
       );
+      logger.scheduler.info(`Credit deduction result: ${creditDeducted}`, { scheduledTestId: scheduledTest.id });
 
       if (!creditDeducted) {
         logger.scheduler.warn(`Failed to deduct credits for scheduled test`, {
@@ -235,6 +238,7 @@ export class SchedulerService {
       }
 
       // Create a test run
+      logger.scheduler.info(`Creating test run...`, { scheduledTestId: scheduledTest.id });
       const testRunQuery = `
         INSERT INTO test_runs (
           user_id, name, status, agent_id, provider, config, progress
@@ -257,9 +261,12 @@ export class SchedulerService {
       ]);
 
       const testRunId = testRunResult.rows[0].id;
+      logger.scheduler.info(`Test run created with ID: ${testRunId}`, { scheduledTestId: scheduledTest.id });
 
       // Update the scheduled test after successful start
+      logger.scheduler.info(`Updating scheduled test after run...`, { scheduledTestId: scheduledTest.id });
       await ScheduledTestModel.updateAfterRun(scheduledTest.id);
+      logger.scheduler.info(`Scheduled test updated`, { scheduledTestId: scheduledTest.id });
 
       logger.scheduler.info(`Started test run for scheduled test`, { 
         testRunId,
