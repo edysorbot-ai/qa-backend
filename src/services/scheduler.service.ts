@@ -112,11 +112,29 @@ export class SchedulerService {
   }
 
   /**
+   * Get scheduler status for debugging
+   */
+  getStatus(): { isRunning: boolean; checkIntervalMs: number; lastCheck?: string } {
+    return {
+      isRunning: this.isRunning,
+      checkIntervalMs: this.checkIntervalMs,
+      lastCheck: this.lastCheckTime,
+    };
+  }
+
+  private lastCheckTime?: string;
+
+  /**
    * Check for due tests and run them
    */
   private async checkAndRunDueTests(): Promise<void> {
+    this.lastCheckTime = new Date().toISOString();
+    
     try {
       const dueTests = await ScheduledTestModel.findDueTests();
+
+      // Log every check at info level for visibility
+      logger.scheduler.info(`Scheduler check at ${this.lastCheckTime}: ${dueTests.length} due test(s) found`);
 
       if (dueTests.length === 0) {
         return;

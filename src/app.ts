@@ -201,6 +201,31 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Scheduler status (for debugging)
+app.get('/api/scheduler-status', async (req, res) => {
+  try {
+    const { schedulerService } = require('./services/scheduler.service');
+    const { ScheduledTestModel } = require('./models/scheduledTest.model');
+    
+    const status = schedulerService.getStatus();
+    const dueTests = await ScheduledTestModel.findDueTests();
+    
+    res.json({
+      scheduler: status,
+      dueTestsCount: dueTests.length,
+      dueTests: dueTests.map((t: any) => ({ 
+        id: t.id, 
+        name: t.name, 
+        next_run_at: t.next_run_at,
+        status: t.status 
+      })),
+      serverTime: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get scheduler status', message: (error as Error).message });
+  }
+});
+
 // Public endpoint for enabled integrations (used by frontend settings page)
 // Must be before requireAuthentication middleware
 app.get('/api/enabled-integrations', async (req, res) => {
