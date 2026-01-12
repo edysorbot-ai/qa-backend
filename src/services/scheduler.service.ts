@@ -165,9 +165,16 @@ export class SchedulerService {
         (sum: number, batch: any) => sum + (batch.testCases?.length || 0), 
         0
       );
+      
+      logger.scheduler.info(`Test case count: ${testCaseCount}`, { scheduledTestId: scheduledTest.id });
 
       // Validate credits before running
       const creditCheck = await this.validateUserCredits(scheduledTest.user_id, testCaseCount);
+      logger.scheduler.info(`Credit check result: ${JSON.stringify(creditCheck)}`, { 
+        scheduledTestId: scheduledTest.id,
+        userId: scheduledTest.user_id,
+      });
+      
       if (!creditCheck.valid) {
         logger.scheduler.warn(`Scheduled test skipped due to insufficient credits`, {
           scheduledTestId: scheduledTest.id,
@@ -183,6 +190,7 @@ export class SchedulerService {
       }
 
       // Get the agent details
+      logger.scheduler.info(`Fetching agent details...`, { scheduledTestId: scheduledTest.id, agentId: scheduledTest.agent_id });
       const agentQuery = `
         SELECT a.*, i.api_key 
         FROM agents a 
@@ -190,6 +198,7 @@ export class SchedulerService {
         WHERE a.id = $1
       `;
       const agentResult = await pool.query(agentQuery, [scheduledTest.agent_id]);
+      logger.scheduler.info(`Agent query result: ${agentResult.rows.length} rows`, { scheduledTestId: scheduledTest.id });
 
       if (!agentResult.rows[0]) {
         logger.scheduler.error(`Agent not found for scheduled test`, { 
