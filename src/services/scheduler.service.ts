@@ -114,15 +114,19 @@ export class SchedulerService {
   /**
    * Get scheduler status for debugging
    */
-  getStatus(): { isRunning: boolean; checkIntervalMs: number; lastCheck?: string } {
+  getStatus(): { isRunning: boolean; checkIntervalMs: number; lastCheck?: string; lastRunAttempt?: string; lastRunError?: string } {
     return {
       isRunning: this.isRunning,
       checkIntervalMs: this.checkIntervalMs,
       lastCheck: this.lastCheckTime,
+      lastRunAttempt: this.lastRunAttemptTime,
+      lastRunError: this.lastRunError,
     };
   }
 
   private lastCheckTime?: string;
+  private lastRunAttemptTime?: string;
+  private lastRunError?: string;
 
   /**
    * Check for due tests and run them
@@ -154,6 +158,9 @@ export class SchedulerService {
    * Run a single scheduled test
    */
   private async runScheduledTest(scheduledTest: any): Promise<void> {
+    this.lastRunAttemptTime = new Date().toISOString();
+    this.lastRunError = undefined;
+    
     logger.scheduler.info(`Running scheduled test: ${scheduledTest.name}`, { 
       scheduledTestId: scheduledTest.id,
       userId: scheduledTest.user_id,
@@ -269,12 +276,15 @@ export class SchedulerService {
           scheduledTestId: scheduledTest.id,
           error: error.message,
         });
+        this.lastRunError = `Execute error: ${error.message}`;
       });
 
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown';
+      this.lastRunError = `Run error: ${errorMsg}`;
       logger.scheduler.error(`Error running scheduled test`, { 
         scheduledTestId: scheduledTest.id,
-        error: error instanceof Error ? error.message : 'Unknown',
+        error: errorMsg,
       });
     }
   }
