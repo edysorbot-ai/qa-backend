@@ -241,8 +241,8 @@ export class SchedulerService {
       logger.scheduler.info(`Creating test run...`, { scheduledTestId: scheduledTest.id });
       const testRunQuery = `
         INSERT INTO test_runs (
-          user_id, name, status, agent_id, provider, config, progress
-        ) VALUES ($1, $2, 'pending', $3, $4, $5, 0)
+          user_id, name, status, agent_id, config, total_tests
+        ) VALUES ($1, $2, 'pending', $3, $4, $5)
         RETURNING id
       `;
 
@@ -250,14 +250,15 @@ export class SchedulerService {
         scheduledTest.user_id,
         `[Scheduled] ${scheduledTest.name}`,
         scheduledTest.agent_id,
-        scheduledTest.provider,
         JSON.stringify({
+          provider: scheduledTest.provider,
           agentName: scheduledTest.agent_name,
           scheduledTestId: scheduledTest.id,
           enableBatching: scheduledTest.enable_batching,
           enableConcurrency: scheduledTest.enable_concurrency,
           concurrencyCount: scheduledTest.concurrency_count,
         }),
+        testCaseCount,
       ]);
 
       const testRunId = testRunResult.rows[0].id;
