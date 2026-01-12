@@ -11,10 +11,10 @@ import { logger } from '../services/logger.service';
 
 // Rate limit configuration
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const RATE_LIMIT_GENERAL = 100; // General API: 100 requests per 15 min
+const RATE_LIMIT_GENERAL = 500; // General API: 500 requests per 15 min
 const RATE_LIMIT_AUTH = 20; // Auth endpoints: 20 requests per 15 min
-const RATE_LIMIT_TEST_EXECUTION = 30; // Test execution: 30 requests per 15 min
-const RATE_LIMIT_ADMIN = 200; // Admin panel: 200 requests per 15 min
+const RATE_LIMIT_TEST_EXECUTION = 200; // Test execution: 200 requests per 15 min (polling + status checks)
+const RATE_LIMIT_ADMIN = 500; // Admin panel: 500 requests per 15 min
 
 // Helper to safely get IP address
 const getClientIp = (req: Request): string => {
