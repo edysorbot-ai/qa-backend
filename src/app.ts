@@ -193,10 +193,8 @@ function ulawToLinear(ulawByte: number): number {
   return sign ? -sample : sample;
 }
 
-// Clerk authentication middleware
-app.use(clerkAuth);
-
-// Public routes (health check)
+// Public routes (before auth middleware)
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -225,6 +223,9 @@ app.get('/api/scheduler-status', async (req, res) => {
     res.status(500).json({ error: 'Failed to get scheduler status', message: (error as Error).message });
   }
 });
+
+// Clerk authentication middleware
+app.use(clerkAuth);
 
 // Public endpoint for enabled integrations (used by frontend settings page)
 // Must be before requireAuthentication middleware
