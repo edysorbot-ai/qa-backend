@@ -267,6 +267,18 @@ app.get('/api/referral/validate/:code', async (req, res) => {
   }
 });
 
+// Public pricing packages endpoint (for homepage pricing section)
+app.get('/api/public/packages', async (req, res) => {
+  try {
+    const { AdminModel } = require('./models/admin.model');
+    const packages = await AdminModel.getActivePackages();
+    res.json(packages);
+  } catch (error) {
+    logger.api.error('Error fetching public packages:', { error: error instanceof Error ? error.message : 'Unknown' });
+    res.status(500).json({ error: 'Failed to fetch packages' });
+  }
+});
+
 // Development test endpoints - ONLY available in non-production environments
 // These bypass authentication and should NEVER be enabled in production
 if (!isProduction) {
