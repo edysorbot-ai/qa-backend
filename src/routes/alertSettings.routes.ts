@@ -355,9 +355,16 @@ router.put('/slack', async (req: Request, res: Response) => {
     const effectiveUserId = await getEffectiveUserId(userId);
     const { slack_enabled, slack_webhook_url, slack_channel } = req.body;
 
-    // Validate webhook URL if enabling
-    if (slack_enabled && slack_webhook_url && !slack_webhook_url.startsWith('https://hooks.slack.com/')) {
-      return res.status(400).json({ message: 'Invalid Slack webhook URL' });
+    // Validate webhook URL format if provided
+    if (slack_webhook_url && slack_webhook_url.trim() !== '') {
+      if (!slack_webhook_url.startsWith('https://hooks.slack.com/')) {
+        return res.status(400).json({ message: 'Invalid Slack webhook URL. Must start with https://hooks.slack.com/' });
+      }
+    }
+
+    // Require webhook URL if enabling Slack
+    if (slack_enabled && (!slack_webhook_url || slack_webhook_url.trim() === '')) {
+      return res.status(400).json({ message: 'Webhook URL is required when enabling Slack notifications' });
     }
 
     const settings = await alertSettingsService.upsert(effectiveUserId, {

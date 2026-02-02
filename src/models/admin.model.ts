@@ -449,6 +449,16 @@ export const AdminModel = {
          VALUES ($1, 'package_assigned', $2, $3, $4, $5)`,
         [userId, pkg.credits, result.rows[0].current_credits, `Package assigned: ${pkg.name}`, JSON.stringify({ package_id: packageId, package_name: pkg.name })]
       );
+
+      // Cascade package upgrade to team members
+      try {
+        const { teamMemberService } = await import('../services/teamMember.service');
+        await teamMemberService.cascadePackageUpgrade(userId, packageId, expiresAt);
+        console.log(`[Admin] Cascaded package ${pkg.name} to team members of user ${userId}`);
+      } catch (cascadeError) {
+        console.error('[Admin] Failed to cascade package to team members:', cascadeError);
+        // Don't fail the main operation if cascade fails
+      }
     }
 
     return result.rows[0] || null;

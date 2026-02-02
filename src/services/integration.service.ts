@@ -30,10 +30,10 @@ export class IntegrationService {
 
   async create(data: CreateIntegrationDTO): Promise<Integration> {
     const result = await query(
-      `INSERT INTO integrations (user_id, provider, api_key)
-       VALUES ($1, $2, $3)
+      `INSERT INTO integrations (user_id, provider, api_key, is_active)
+       VALUES ($1, $2, $3, false)
        ON CONFLICT (user_id, provider) 
-       DO UPDATE SET api_key = $3, is_active = true, updated_at = CURRENT_TIMESTAMP
+       DO UPDATE SET api_key = $3, is_active = false, updated_at = CURRENT_TIMESTAMP
        RETURNING *`,
       [data.user_id, data.provider, data.api_key]
     );
@@ -83,10 +83,9 @@ export class IntegrationService {
       const client = getProviderClient(provider);
       return await client.validateApiKey(apiKey);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         valid: false,
-        message: `Failed to validate ${provider} API key: ${message}`,
+        message: 'Invalid API key',
       };
     }
   }
@@ -190,7 +189,16 @@ export class IntegrationService {
       return { valid: false, message: 'Integration not found' };
     }
 
-    return this.validateApiKey(integration.provider, integration.api_key);
+    const validation = await this.validateApiKey(integration.provider, integration.api_key);
+    
+    // Update is_active based on validation result
+    if (validation.valid) {
+      await this.update(integrationId, { is_active: true });
+    } else {
+      await this.update(integrationId, { is_active: false });
+    }
+    
+    return validation;
   }
 
   /**
