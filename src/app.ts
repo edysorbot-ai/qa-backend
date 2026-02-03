@@ -199,6 +199,37 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Serve recording files
+app.get('/recordings/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    
+    // Sanitize filename to prevent directory traversal
+    const sanitizedFilename = path.basename(filename);
+    const filePath = path.join(recordingsDir, sanitizedFilename);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Recording not found' });
+    }
+    
+    // Set CORS headers for cross-origin audio playback
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Accept-Ranges', 'bytes');
+    
+    // Read and serve the WAV file
+    const audioData = fs.readFileSync(filePath);
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Content-Length', audioData.length);
+    res.setHeader('Content-Disposition', `inline; filename="${sanitizedFilename}"`);
+    res.send(audioData);
+  } catch (error) {
+    logger.api.error('Error serving recording:', { error: error instanceof Error ? error.message : 'Unknown', filename: req.params.filename });
+    res.status(500).json({ error: 'Failed to serve recording file' });
+  }
+});
+
 // Scheduler status (for debugging)
 app.get('/api/scheduler-status', async (req, res) => {
   try {

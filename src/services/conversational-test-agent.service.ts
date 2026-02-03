@@ -755,22 +755,34 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
             const totalUserBytes = conversationAudioSegments.filter(s => s.role === 'user').reduce((sum, s) => sum + s.audio.length, 0);
             console.log(`[RealAudio] Combined audio: ${combinedAudio.length} bytes (Agent: ${totalAgentBytes}, User: ${totalUserBytes})`);
             
-            // Convert mu-law to WAV format for browser playback
-            if (combinedAudio.length < 10 * 1024 * 1024) { // Allow up to 10MB
+            // Convert mu-law to WAV format and save as file
+            if (combinedAudio.length < 50 * 1024 * 1024) { // Allow up to 50MB
               // Convert ulaw to PCM-16 for WAV
               const pcmBuffer = this.ulawToPcm16(combinedAudio);
               
               // Create WAV file with proper header
               const wavBuffer = this.createWavBuffer(pcmBuffer, 8000, 1, 16);
               
-              const base64Audio = wavBuffer.toString('base64');
-              recordingUrl = `data:audio/wav;base64,${base64Audio}`;
+              // Save as file instead of data URL
+              const fs = require('fs');
+              const path = require('path');
+              const recordingsDir = path.join(__dirname, '../../recordings');
+              if (!fs.existsSync(recordingsDir)) {
+                fs.mkdirSync(recordingsDir, { recursive: true });
+              }
+              
+              const filename = `recording_${callId || Date.now()}_${Math.random().toString(36).substring(7)}.wav`;
+              const filePath = path.join(recordingsDir, filename);
+              fs.writeFileSync(filePath, wavBuffer);
+              
+              // Store as relative URL path that can be served by backend
+              recordingUrl = `/recordings/${filename}`;
               
               // Calculate duration: ulaw is 8000 samples/sec, 1 byte per sample
               const durationSecs = combinedAudio.length / 8000;
-              console.log(`[RealAudio] Created full conversation WAV recording (${durationSecs.toFixed(1)}s, ${base64Audio.length} chars base64)`);
+              console.log(`[RealAudio] ✓ Saved WAV recording to ${filePath} (${durationSecs.toFixed(1)}s, ${(wavBuffer.length / 1024).toFixed(1)}KB)`);
             } else {
-              console.log(`[RealAudio] Audio too large for data URL (${combinedAudio.length} bytes), skipping`);
+              console.log(`[RealAudio] Audio too large (${combinedAudio.length} bytes), skipping`);
             }
           }
 
@@ -782,6 +794,12 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
             .filter(t => t.role === 'test_caller')
             .map(t => t.content)
             .join('\n');
+
+          console.log(`[RealAudio] ✓ Test complete:`);
+          console.log(`  - Transcript turns: ${transcript.length}`);
+          console.log(`  - Agent transcript length: ${agentTranscript.length} chars`);
+          console.log(`  - User transcript length: ${testCallerTranscript.length} chars`);
+          console.log(`  - Recording URL: ${recordingUrl || 'NONE'}`);
 
           resolve({
             callId,
