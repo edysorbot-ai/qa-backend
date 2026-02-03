@@ -51,10 +51,14 @@ export class TestCaseController {
       // Get the effective user ID (owner's ID for team members)
       const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
-      const { agent_id, name, scenario } = req.body;
+      const { agent_id, name, scenario, expected_behavior } = req.body;
 
       if (!agent_id || !name || !scenario) {
         return res.status(400).json({ error: 'Agent ID, name, and scenario are required' });
+      }
+
+      if (!expected_behavior || expected_behavior.trim() === '') {
+        return res.status(400).json({ error: 'Expected response is required' });
       }
 
       const testCase = await testCaseService.create({
@@ -62,6 +66,7 @@ export class TestCaseController {
         user_id: effectiveUserId,
         name,
         scenario,
+        expected_behavior,
       });
 
       // Deduct credits after successful creation

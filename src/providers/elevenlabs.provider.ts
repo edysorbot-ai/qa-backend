@@ -126,11 +126,10 @@ export class ElevenLabsProvider implements VoiceProviderClient {
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      console.error('ElevenLabs validation error:', message);
+      console.error('ElevenLabs validation error:', error instanceof Error ? error.message : 'Unknown error');
       return {
         valid: false,
-        message: `Invalid ElevenLabs API key: ${message}`,
+        message: 'Invalid API key',
       };
     }
   }

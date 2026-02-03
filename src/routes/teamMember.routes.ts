@@ -246,28 +246,38 @@ router.post('/',
     // Update with clerk_id
     await teamMemberService.updateClerkId(email, clerkUser.id);
     
-    // Assign owner's package and credits to team member
-    await assignOwnerPackageToTeamMember(userId, email.toLowerCase());
-
-    // Add team member email to owner's alert settings
-    await alertSettingsService.addTeamMemberEmail(userId, email, name);
-
-    // Get owner info for email
-    const owner = await userService.findById(userId);
-
-    // Send welcome email with credentials
-    await emailNotificationService.sendTeamMemberWelcomeEmail({
-      toEmail: email,
-      name,
-      password,
-      ownerName: owner ? `${owner.first_name || ''} ${owner.last_name || ''}`.trim() || 'Your team admin' : 'Your team admin',
-      loginUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
-    });
-
+    // Return response immediately, then handle package assignment and email in background
     res.json({ 
       teamMember: { ...teamMember, clerk_id: clerkUser.id, status: 'active' },
-      message: 'Team member created successfully. Login credentials sent to their email.' 
+      message: 'Team member created successfully. Login credentials will be sent to their email shortly.' 
     });
+
+    // Perform remaining operations in background (don't block response)
+    // Assign owner's package and credits to team member
+    assignOwnerPackageToTeamMember(userId, email.toLowerCase()).catch(err => 
+      console.error('[TeamMember] Background package assignment failed:', err)
+    );
+
+    // Add team member email to owner's alert settings
+    alertSettingsService.addTeamMemberEmail(userId, email, name).catch(err =>
+      console.error('[TeamMember] Background alert settings update failed:', err)
+    );
+
+    // Get owner info and send welcome email
+    (async () => {
+      try {
+        const owner = await userService.findById(userId);
+        await emailNotificationService.sendTeamMemberWelcomeEmail({
+          toEmail: email,
+          name,
+          password,
+          ownerName: owner ? `${owner.first_name || ''} ${owner.last_name || ''}`.trim() || 'Your team admin' : 'Your team admin',
+          loginUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+        });
+      } catch (emailError) {
+        console.error('[TeamMember] Background email send failed:', emailError);
+      }
+    })();
   } catch (error) {
     console.error('Error creating team member:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -293,18 +303,50 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ message: 'Team member not found' });
     }
 
-    // Delete from Clerk if they have a clerk_id
+    // Delete from Clerk - try both clerk_id and email lookup
+    let clerkDeleted = false;
+    
+    // First try with clerk_id if available
     if (teamMember.clerk_id) {
       try {
         await clerkClient.users.deleteUser(teamMember.clerk_id);
+        clerkDeleted = true;
+        console.log(`Deleted Clerk user by ID: ${teamMember.clerk_id}`);
       } catch (clerkError) {
-        console.error('Error deleting Clerk user:', clerkError);
-        // Continue anyway - they might have been deleted already
+        console.error('Error deleting Clerk user by ID:', clerkError);
+      }
+    }
+    
+    // If not deleted yet, try to find and delete by email
+    if (!clerkDeleted) {
+      try {
+        const clerkUsers = await clerkClient.users.getUserList({
+          emailAddress: [teamMember.email]
+        });
+        
+        if (clerkUsers.data.length > 0) {
+          for (const clerkUser of clerkUsers.data) {
+            await clerkClient.users.deleteUser(clerkUser.id);
+            console.log(`Deleted Clerk user by email lookup: ${clerkUser.id} (${teamMember.email})`);
+          }
+        }
+      } catch (clerkError) {
+        console.error('Error deleting Clerk user by email:', clerkError);
+        // Continue anyway
       }
     }
 
     // Remove team member email from owner's alert settings
     await alertSettingsService.removeTeamMemberEmail(userId, teamMember.email);
+
+    // Delete the user record from users table to free up the email
+    try {
+      await pool.query('DELETE FROM users WHERE LOWER(email) = $1', [teamMember.email.toLowerCase()]);
+      console.log(`Deleted user record for email: ${teamMember.email}`);
+    } catch (userDeleteError) {
+      console.error('Error deleting user record:', userDeleteError);
+      // Continue anyway - user might not exist
+    }
 
     const deleted = await teamMemberService.delete(id, userId);
     if (!deleted) {

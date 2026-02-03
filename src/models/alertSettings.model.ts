@@ -1,7 +1,7 @@
 export interface EmailConfig {
   email: string;
   enabled: boolean;
-  type: 'account' | 'team_member';
+  type?: 'account' | 'team_member';  // Optional - custom emails won't have a type
   name?: string;
 }
 

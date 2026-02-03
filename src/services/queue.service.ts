@@ -63,14 +63,48 @@ const EVENTS_QUEUE_NAME = 'voice-test-events';
 
 // Redis connection
 let redisConnection: Redis | null = null;
+let redisConnectionFailed = false;
 
-export function getRedisConnection(): Redis {
+export function getRedisConnection(): Redis | null {
+  if (redisConnectionFailed) {
+    return null;
+  }
+  
   if (!redisConnection) {
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-    redisConnection = new Redis(redisUrl, {
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    });
+    try {
+      redisConnection = new Redis(redisUrl, {
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+        retryStrategy: (times) => {
+          if (times > 3) {
+            console.warn('[Queue] Redis unavailable - Queue features disabled. Install and start Redis to enable job queuing.');
+            redisConnectionFailed = true;
+            return null; // Stop retrying
+          }
+          return Math.min(times * 100, 3000);
+        },
+        reconnectOnError: () => false,
+      });
+      
+      redisConnection.on('error', (err: any) => {
+        if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+          if (!redisConnectionFailed) {
+            console.warn('[Queue] Redis connection failed - Queue features disabled');
+            redisConnectionFailed = true;
+          }
+        }
+      });
+      
+      redisConnection.on('connect', () => {
+        console.log('[Queue] Redis connected successfully');
+        redisConnectionFailed = false;
+      });
+    } catch (error) {
+      console.warn('[Queue] Failed to initialize Redis:', error);
+      redisConnectionFailed = true;
+      return null;
+    }
   }
   return redisConnection;
 }
@@ -85,6 +119,14 @@ export class TestExecutionQueue {
 
   constructor() {
     const connection = getRedisConnection();
+    
+    if (!connection) {
+      console.warn('[Queue] Queue service disabled - Redis not available');
+      // Create stub objects to prevent errors
+      this.queue = null as any;
+      this.queueEvents = null as any;
+      return;
+    }
     
     this.queue = new Queue<TestJobData, TestJobResult>(QUEUE_NAME, {
       connection,
@@ -117,6 +159,11 @@ export class TestExecutionQueue {
     ttsConfig: TestJobData['ttsConfig'],
     concurrency: number = 1
   ): Promise<string[]> {
+    if (!this.queue) {
+      console.warn('[Queue] Cannot add test batch - Redis not available');
+      return [];
+    }
+    
     const jobIds: string[] = [];
     const batchSize = Math.ceil(testCases.length / concurrency);
     
@@ -151,8 +198,13 @@ export class TestExecutionQueue {
   startWorker(
     processor: (job: Job<TestJobData, TestJobResult>) => Promise<TestJobResult>,
     concurrency: number = 1
-  ): Worker<TestJobData, TestJobResult> {
+  ): Worker<TestJobData, TestJobResult> | null {
     const connection = getRedisConnection();
+    
+    if (!connection) {
+      console.warn('[Queue] Cannot start worker - Redis not available');
+      return null;
+    }
     
     this.worker = new Worker<TestJobData, TestJobResult>(
       QUEUE_NAME,
@@ -192,6 +244,10 @@ export class TestExecutionQueue {
     pending: number;
     progress: number;
   }> {
+    if (!this.queue) {
+      return { total: 0, completed: 0, failed: 0, pending: 0, progress: 0 };
+    }
+    
     const jobs = await this.queue.getJobs(['completed', 'failed', 'waiting', 'active']);
     const runJobs = jobs.filter(j => j.data.testRunId === testRunId);
     
@@ -229,6 +285,10 @@ export class TestExecutionQueue {
    * Cancel all jobs for a test run
    */
   async cancelTestRun(testRunId: string): Promise<number> {
+    if (!this.queue) {
+      return 0;
+    }
+    
     const jobs = await this.queue.getJobs(['waiting', 'active', 'delayed']);
     const runJobs = jobs.filter(j => j.data.testRunId === testRunId);
     
@@ -249,6 +309,7 @@ export class TestExecutionQueue {
    * Pause the queue
    */
   async pause(): Promise<void> {
+    if (!this.queue) return;
     await this.queue.pause();
   }
 
@@ -256,6 +317,7 @@ export class TestExecutionQueue {
    * Resume the queue
    */
   async resume(): Promise<void> {
+    if (!this.queue) return;
     await this.queue.resume();
   }
 
@@ -269,6 +331,10 @@ export class TestExecutionQueue {
     failed: number;
     delayed: number;
   }> {
+    if (!this.queue) {
+      return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
+    }
+    
     const [waiting, active, completed, failed, delayed] = await Promise.all([
       this.queue.getWaitingCount(),
       this.queue.getActiveCount(),
@@ -284,18 +350,21 @@ export class TestExecutionQueue {
    * Listen for job events
    */
   onJobCompleted(callback: (jobId: string, result: TestJobResult) => void) {
+    if (!this.queueEvents) return;
     this.queueEvents.on('completed', ({ jobId, returnvalue }) => {
       callback(jobId, JSON.parse(returnvalue));
     });
   }
 
   onJobFailed(callback: (jobId: string, error: string) => void) {
+    if (!this.queueEvents) return;
     this.queueEvents.on('failed', ({ jobId, failedReason }) => {
       callback(jobId, failedReason);
     });
   }
 
   onJobProgress(callback: (jobId: string, progress: number) => void) {
+    if (!this.queueEvents) return;
     this.queueEvents.on('progress', ({ jobId, data }) => {
       callback(jobId, Number(data));
     });
@@ -305,6 +374,10 @@ export class TestExecutionQueue {
    * Get job data by test case ID
    */
   async getJobData(testCaseId: string): Promise<TestJobData | null> {
+    if (!this.queue) {
+      return null;
+    }
+    
     try {
       // Try to find job with this test case ID
       const jobs = await this.queue.getJobs(['active', 'waiting', 'completed']);
@@ -327,8 +400,12 @@ export class TestExecutionQueue {
     if (this.worker) {
       await this.worker.close();
     }
-    await this.queue.close();
-    await this.queueEvents.close();
+    if (this.queue) {
+      await this.queue.close();
+    }
+    if (this.queueEvents) {
+      await this.queueEvents.close();
+    }
   }
 }
 

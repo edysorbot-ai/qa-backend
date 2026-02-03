@@ -1026,7 +1026,11 @@ Evaluate this conversation and return the JSON evaluation.`;
         );
       }
 
-      console.log(`[RealTestExecutor] Result stored for test: ${result.testCaseName}`);
+      console.log(`[RealTestExecutor] ✓ Result stored for: ${result.testCaseName}`);
+      console.log(`  - Agent transcript: ${result.agentTranscript?.length || 0} chars`);
+      console.log(`  - User transcript: ${result.testCallerTranscript?.length || 0} chars`);
+      console.log(`  - Conversation turns: ${result.conversationTurns?.length || 0}`);
+      console.log(`  - Recording URL: ${result.recordingUrl || 'NONE'}`);
 
     } catch (error) {
       console.error('[RealTestExecutor] Failed to store result:', error);

@@ -185,10 +185,9 @@ export class BolnaProvider implements VoiceProviderClient {
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         valid: false,
-        message: `Invalid Bolna API key: ${message}`,
+        message: 'Invalid API key',
       };
     }
   }

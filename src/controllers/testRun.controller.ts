@@ -8,6 +8,7 @@ import { integrationService } from '../services/integration.service';
 import { workflowTestExecutorService } from '../services/workflow-test-executor.service';
 import { WorkflowExecutionPlan } from '../models/workflow.model';
 import { teamMemberService } from '../services/teamMember.service';
+import { queueService } from '../services/queue.service';
 
 export class TestRunController {
   async getAll(req: Request, res: Response, next: NextFunction) {
@@ -135,6 +136,15 @@ export class TestRunController {
   async cancel(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
+
+      // Cancel any queued/running jobs for this test run
+      try {
+        const cancelledJobs = await queueService.cancelTestRun(id);
+        console.log(`[TestRunController.cancel] Cancelled ${cancelledJobs} jobs for test run ${id}`);
+      } catch (queueError) {
+        console.error('[TestRunController.cancel] Error cancelling queue jobs:', queueError);
+        // Continue to update status even if queue cancellation fails
+      }
 
       const testRun = await testRunService.update(id, {
         status: 'cancelled',

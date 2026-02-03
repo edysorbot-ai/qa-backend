@@ -109,10 +109,9 @@ export class OpenAIRealtimeProvider implements VoiceProviderClient {
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         valid: false,
-        message: `Invalid OpenAI API key: ${message}`,
+        message: 'Invalid API key',
       };
     }
   }
