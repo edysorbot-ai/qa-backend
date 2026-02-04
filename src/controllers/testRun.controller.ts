@@ -10,6 +10,7 @@ import { WorkflowExecutionPlan } from '../models/workflow.model';
 import { teamMemberService } from '../services/teamMember.service';
 import { testExecutionQueue } from '../services/queue.service';
 import { contextGrowthService } from '../services/context-growth.service';
+import * as toolDecisionService from '../services/tool-decision.service';
 
 export class TestRunController {
   async getAll(req: Request, res: Response, next: NextFunction) {
@@ -456,6 +457,56 @@ export class TestRunController {
         },
         message: 'Workflow test run started',
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get tool decisions for a specific test result
+   */
+  async getResultToolDecisions(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { resultId } = req.params;
+
+      const trace = await toolDecisionService.getToolDecisionTrace(resultId);
+
+      if (!trace) {
+        return res.status(404).json({ error: 'Test result not found' });
+      }
+
+      res.json({ trace });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get tool usage analytics for an agent
+   */
+  async getAgentToolAnalytics(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { agentId } = req.params;
+
+      const analytics = await toolDecisionService.getAgentToolUsageAnalytics(agentId);
+
+      res.json({ analytics });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Generate audit export for tool decisions
+   */
+  async exportToolDecisionAudit(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { resultId } = req.params;
+      const { auditorNotes } = req.body;
+
+      const audit = await toolDecisionService.generateToolDecisionAudit(resultId, auditorNotes);
+
+      res.json({ audit });
     } catch (error) {
       next(error);
     }
