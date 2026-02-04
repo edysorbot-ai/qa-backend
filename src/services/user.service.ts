@@ -183,6 +183,15 @@ export class UserService {
       console.error('[UserService] Failed to fetch user from Clerk:', error);
     }
 
+    // Check if this email belongs to a team member and update their clerk_id
+    const { teamMemberService } = await import('./teamMember.service');
+    const teamMember = await teamMemberService.findByEmail(email);
+    if (teamMember && !teamMember.clerk_id) {
+      // Link the clerk_id to the team member record
+      await teamMemberService.updateClerkId(email, clerkId);
+      console.log(`[UserService] Linked clerk_id ${clerkId} to team member ${email}`);
+    }
+
     // Create user record with correct email
     return this.create({
       clerk_id: clerkId,

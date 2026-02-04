@@ -621,6 +621,43 @@ Provide your analysis as a JSON object.`;
   }
 
   /**
+   * Save dynamic variable test values for an agent
+   */
+  async saveDynamicVariables(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const { variables } = req.body;
+
+      if (!variables || typeof variables !== 'object') {
+        return res.status(400).json({ error: 'Variables object is required' });
+      }
+
+      const agent = await agentService.findById(id);
+      if (!agent) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
+
+      // Store test values in the agent's config
+      const currentConfig = agent.config || {};
+      const updatedConfig = {
+        ...currentConfig,
+        testVariables: variables,
+      };
+
+      const updatedAgent = await agentService.update(id, { config: updatedConfig });
+
+      res.json({
+        success: true,
+        message: 'Dynamic variable test values saved successfully',
+        variables,
+      });
+    } catch (error: any) {
+      console.error('Error saving dynamic variables:', error);
+      res.status(500).json({ error: error?.message || 'Failed to save dynamic variables' });
+    }
+  }
+
+  /**
    * Get knowledge base information for an agent
    */
   async getKnowledgeBase(req: Request, res: Response, next: NextFunction) {

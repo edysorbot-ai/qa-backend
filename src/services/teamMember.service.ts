@@ -37,13 +37,16 @@ export class TeamMemberService {
 
   /**
    * Get all team members for a user (owner)
-   * Returns active team members in chronological order (newest first)
+   * Returns all team members (including deactivated) in chronological order (newest first)
+   * Active members are shown first, followed by deactivated ones
    */
   async findByOwnerId(ownerUserId: string): Promise<TeamMember[]> {
     const result = await query(
       `SELECT * FROM team_members 
-       WHERE owner_user_id = $1 AND status != 'deactivated'
-       ORDER BY created_at DESC`,
+       WHERE owner_user_id = $1
+       ORDER BY 
+         CASE WHEN status = 'deactivated' THEN 1 ELSE 0 END,
+         created_at DESC`,
       [ownerUserId]
     );
     return result.rows;

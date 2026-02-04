@@ -51,6 +51,9 @@ router.post('/:id/analyze-prompt', agentController.analyzePrompt.bind(agentContr
 // GET /api/agents/:id/dynamic-variables - Get dynamic variables from agent's prompt
 router.get('/:id/dynamic-variables', agentController.getDynamicVariables.bind(agentController));
 
+// POST /api/agents/:id/dynamic-variables - Save dynamic variable test values
+router.post('/:id/dynamic-variables', agentController.saveDynamicVariables.bind(agentController));
+
 // GET /api/agents/:id/knowledge-base - Get knowledge base for agent
 router.get('/:id/knowledge-base', agentController.getKnowledgeBase.bind(agentController));
 
