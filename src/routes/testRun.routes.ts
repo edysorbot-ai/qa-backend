@@ -12,6 +12,12 @@ router.get('/stats', testRunController.getStats.bind(testRunController));
 // GET /api/test-runs/compare - Compare multiple test runs
 router.get('/compare', testRunController.compare.bind(testRunController));
 
+// GET /api/test-runs/results/:resultId/context-metrics - Get context growth metrics for a test result
+router.get('/results/:resultId/context-metrics', testRunController.getResultContextMetrics.bind(testRunController));
+
+// GET /api/test-runs/agents/:agentId/context-summary - Get context growth summary for an agent
+router.get('/agents/:agentId/context-summary', testRunController.getAgentContextSummary.bind(testRunController));
+
 // GET /api/test-runs/:id - Get test run by ID with results
 router.get('/:id', testRunController.getById.bind(testRunController));
 

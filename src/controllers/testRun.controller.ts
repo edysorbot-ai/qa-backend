@@ -9,6 +9,7 @@ import { workflowTestExecutorService } from '../services/workflow-test-executor.
 import { WorkflowExecutionPlan } from '../models/workflow.model';
 import { teamMemberService } from '../services/teamMember.service';
 import { testExecutionQueue } from '../services/queue.service';
+import { contextGrowthService } from '../services/context-growth.service';
 
 export class TestRunController {
   async getAll(req: Request, res: Response, next: NextFunction) {
@@ -308,6 +309,40 @@ export class TestRunController {
       }
 
       res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get context growth metrics for a specific test result
+   */
+  async getResultContextMetrics(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { resultId } = req.params;
+
+      const metrics = await contextGrowthService.getContextMetrics(resultId);
+
+      if (!metrics) {
+        return res.status(404).json({ error: 'Test result not found or has no conversation data' });
+      }
+
+      res.json({ metrics });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get context growth summary for an agent
+   */
+  async getAgentContextSummary(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { agentId } = req.params;
+
+      const summary = await contextGrowthService.getAgentContextSummary(agentId);
+
+      res.json({ summary });
     } catch (error) {
       next(error);
     }

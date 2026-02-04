@@ -6,6 +6,33 @@ export interface ConversationTurn {
   audio_url?: string;
   timestamp: number;
   latency_ms?: number;
+  // Token tracking for Context Growth Monitor
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  cumulative_context_tokens?: number;
+  context_growth_rate?: number; // % increase from previous turn
+}
+
+// Context Growth Metrics for monitoring token usage across conversation
+export interface ContextGrowthMetrics {
+  testResultId: string;
+  turns: TurnTokenMetrics[];
+  totalTokensUsed: number;
+  averageContextGrowth: number;
+  maxContextSize: number;
+  contextEfficiencyScore: number; // Lower is better (100 = linear, >100 = bloat)
+  bloatDetected: boolean;
+  bloatTurnNumber?: number; // Turn where bloat was first detected
+  estimatedCostSavings?: number; // Potential savings with better context management
+}
+
+export interface TurnTokenMetrics {
+  turnNumber: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalContextTokens: number;
+  contextGrowthRate: number;
+  timestamp: Date;
 }
 
 // ============================================
