@@ -9,6 +9,10 @@ import customAgentRoutes from './custom-agent.routes';
 import scheduledTestRoutes from './scheduledTest.routes';
 import alertSettingsRoutes from './alertSettings.routes';
 import teamMemberRoutes from './teamMember.routes';
+import goldenTestRoutes from './goldenTest.routes';
+import inferenceRoutes from './inference.routes';
+import leakageRoutes from './leakage.routes';
+import consistencyRoutes from './consistency.routes';
 
 const router = Router();
 
@@ -28,5 +32,9 @@ router.use('/test-execution', testExecutionRoutes);
 router.use('/scheduled-tests', scheduledTestRoutes);
 router.use('/alert-settings', alertSettingsRoutes);
 router.use('/team-members', teamMemberRoutes);
+router.use('/golden-tests', goldenTestRoutes);
+router.use('/', inferenceRoutes);  // Inference routes use various base paths
+router.use('/', leakageRoutes);  // Leakage routes use /agents/:agentId/... paths
+router.use('/', consistencyRoutes);  // Consistency routes use /agents/:agentId/... paths
 
 export default router;

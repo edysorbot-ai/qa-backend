@@ -51,7 +51,27 @@ export class TestCaseController {
       // Get the effective user ID (owner's ID for team members)
       const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
-      const { agent_id, name, scenario, expected_behavior } = req.body;
+      const { 
+        agent_id, 
+        name, 
+        scenario, 
+        expected_behavior,
+        description,
+        key_topic,
+        test_type,
+        category,
+        priority,
+        test_mode,
+        // Persona fields
+        persona_type,
+        persona_traits,
+        voice_accent,
+        behavior_modifiers,
+        // Security fields
+        is_security_test,
+        security_test_type,
+        sensitive_data_types,
+      } = req.body;
 
       if (!agent_id || !name || !scenario) {
         return res.status(400).json({ error: 'Agent ID, name, and scenario are required' });
@@ -65,8 +85,23 @@ export class TestCaseController {
         agent_id,
         user_id: effectiveUserId,
         name,
+        description,
         scenario,
         expected_behavior,
+        key_topic,
+        test_type,
+        category,
+        priority,
+        test_mode,
+        // Persona fields
+        persona_type,
+        persona_traits,
+        voice_accent,
+        behavior_modifiers,
+        // Security fields
+        is_security_test,
+        security_test_type,
+        sensitive_data_types,
       });
 
       // Deduct credits after successful creation

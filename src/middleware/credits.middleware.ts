@@ -37,6 +37,8 @@ export const FeatureKeys = {
   AGENT_CREATE: 'agent_create',
   SCHEDULED_TEST_CREATE: 'scheduled_test_create',
   TEAM_MEMBER_ADD: 'team_member_add',
+  PRODUCTION_MONITORING_ENABLE: 'production_monitoring_enable',
+  PRODUCTION_CALL_ANALYZE: 'production_call_analyze',
 } as const;
 
 /**
@@ -92,7 +94,7 @@ async function getUserSubscription(userId: string): Promise<UserSubscription> {
 /**
  * Get credit cost for a feature
  */
-async function getFeatureCreditCost(featureKey: string): Promise<number> {
+export async function getFeatureCreditCost(featureKey: string): Promise<number> {
   const result = await pool.query(`
     SELECT credit_cost FROM feature_credit_costs 
     WHERE feature_key = $1 AND is_active = true

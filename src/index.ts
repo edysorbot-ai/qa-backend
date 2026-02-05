@@ -13,6 +13,7 @@ import { createMonitoringTables } from './db/migrations/013_create_monitoring_ta
 import { addProviderAgentIdColumn } from './db/migrations/014_add_provider_agent_id';
 import { up as addScheduleEndOptions } from './db/migrations/016_add_schedule_end_options';
 import { up as createAdminSystem } from './db/migrations/017_create_admin_system';
+import { addMonitoringFeatureCosts } from './db/migrations/028_add_monitoring_feature_costs';
 import { ScheduledTestModel } from './models/scheduledTest.model';
 import { schedulerService } from './services/scheduler.service';
 import { setWebSocketBroadcast } from './routes/webhook.routes';
@@ -42,6 +43,7 @@ const startServer = async () => {
     await addProviderAgentIdColumn();
     await addScheduleEndOptions();
     await createAdminSystem();
+    await addMonitoringFeatureCosts();
     
     // Create scheduled tests table
     await ScheduledTestModel.createTable();

@@ -30,9 +30,11 @@ export class TestCaseService {
     const result = await query(
       `INSERT INTO test_cases (
         agent_id, user_id, name, description, scenario, user_input,
-        expected_behavior, key_topic, test_type, category, priority, batch_compatible
+        expected_behavior, key_topic, test_type, category, priority, batch_compatible,
+        persona_type, persona_traits, voice_accent, behavior_modifiers,
+        is_security_test, security_test_type, sensitive_data_types
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        RETURNING *`,
       [
         data.agent_id,
@@ -47,6 +49,13 @@ export class TestCaseService {
         data.category || 'General',
         data.priority || 'medium',
         data.batch_compatible ?? true,
+        data.persona_type || 'neutral',
+        JSON.stringify(data.persona_traits || []),
+        data.voice_accent || null,
+        JSON.stringify(data.behavior_modifiers || []),
+        data.is_security_test || false,
+        data.security_test_type || null,
+        JSON.stringify(data.sensitive_data_types || []),
       ]
     );
     return result.rows[0];
@@ -101,6 +110,34 @@ export class TestCaseService {
     if (data.batch_compatible !== undefined) {
       fields.push(`batch_compatible = $${paramCount++}`);
       values.push(data.batch_compatible);
+    }
+    if (data.persona_type !== undefined) {
+      fields.push(`persona_type = $${paramCount++}`);
+      values.push(data.persona_type);
+    }
+    if (data.persona_traits !== undefined) {
+      fields.push(`persona_traits = $${paramCount++}`);
+      values.push(JSON.stringify(data.persona_traits));
+    }
+    if (data.voice_accent !== undefined) {
+      fields.push(`voice_accent = $${paramCount++}`);
+      values.push(data.voice_accent);
+    }
+    if (data.behavior_modifiers !== undefined) {
+      fields.push(`behavior_modifiers = $${paramCount++}`);
+      values.push(JSON.stringify(data.behavior_modifiers));
+    }
+    if (data.is_security_test !== undefined) {
+      fields.push(`is_security_test = $${paramCount++}`);
+      values.push(data.is_security_test);
+    }
+    if (data.security_test_type !== undefined) {
+      fields.push(`security_test_type = $${paramCount++}`);
+      values.push(data.security_test_type);
+    }
+    if (data.sensitive_data_types !== undefined) {
+      fields.push(`sensitive_data_types = $${paramCount++}`);
+      values.push(JSON.stringify(data.sensitive_data_types));
     }
 
     if (fields.length === 0) return this.findById(id);

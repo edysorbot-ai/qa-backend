@@ -13,6 +13,7 @@ import { generalRateLimiter } from './middleware/rateLimit.middleware';
 import { logger } from './services/logger.service';
 import webhookRoutes, { setWebSocketBroadcast } from './routes/webhook.routes';
 import monitoringRoutes from './routes/monitoring.routes';
+import observabilityRoutes from './routes/observability.routes';
 import superadminRoutes from './routes/superadmin.routes';
 import adminLogsRoutes from './routes/admin.logs.routes';
 
@@ -458,6 +459,9 @@ app.use('/api', requireAuthentication, routes);
 
 // Protected monitoring routes (needs requireAuthentication for clerk auth)
 app.use('/api/monitoring', requireAuthentication, monitoringRoutes);
+
+// Protected observability routes
+app.use('/api/observability', requireAuthentication, observabilityRoutes);
 
 // 404 handler
 app.use(notFoundHandler);

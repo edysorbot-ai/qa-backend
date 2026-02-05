@@ -28,8 +28,8 @@ export class AgentService {
 
   async create(data: CreateAgentDTO): Promise<Agent> {
     const result = await query(
-      `INSERT INTO agents (user_id, integration_id, external_agent_id, name, provider, prompt, intents, config)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO agents (user_id, integration_id, external_agent_id, provider_agent_id, name, provider, prompt, intents, config)
+       VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         data.user_id,

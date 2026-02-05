@@ -7,8 +7,10 @@
 import { Router, Request, Response } from 'express';
 import pool from '../db';
 import { realtimeAnalysisService } from '../services/realtime-analysis.service';
+import { callPollingService } from '../services/call-polling.service';
 import { userService } from '../services/user.service';
 import { teamMemberService } from '../services/teamMember.service';
+import { deductCredits, FeatureKeys, getFeatureCreditCost } from '../middleware/credits.middleware';
 import crypto from 'crypto';
 
 const router = Router();
@@ -412,6 +414,88 @@ router.get('/calls/:callId', async (req: AuthenticatedRequest, res: Response) =>
 });
 
 /**
+ * Get recording audio for a call (proxy to provider)
+ */
+router.get('/calls/:callId/recording', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { callId } = req.params;
+
+    // Get call details including provider info and API key from integrations
+    const result = await pool.query(
+      `SELECT pc.provider_call_id, pc.provider, pc.recording_url, i.api_key
+       FROM production_calls pc
+       JOIN agents a ON pc.agent_id = a.id
+       JOIN integrations i ON a.integration_id = i.id
+       WHERE pc.id = $1 AND pc.user_id = $2`,
+      [callId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+
+    const { provider_call_id, provider, api_key, recording_url } = result.rows[0];
+    console.log(`[Recording] Fetching for call ${callId}, provider: ${provider}, provider_call_id: ${provider_call_id}`);
+
+    if (provider === 'elevenlabs') {
+      // Fetch audio from ElevenLabs Conversational AI API
+      console.log(`[Recording] Fetching ElevenLabs audio for conversation: ${provider_call_id}`);
+      const audioResponse = await fetch(
+        `https://api.elevenlabs.io/v1/convai/conversations/${provider_call_id}/audio`,
+        { headers: { 'xi-api-key': api_key } }
+      );
+
+      if (!audioResponse.ok) {
+        const errorBody = await audioResponse.text().catch(() => '');
+        console.error(`[Recording] ElevenLabs error: ${audioResponse.status} ${audioResponse.statusText}`, errorBody);
+        return res.status(404).json({ error: 'Recording not available' });
+      }
+
+      console.log(`[Recording] ElevenLabs audio fetched successfully, content-type: ${audioResponse.headers.get('content-type')}`);
+      // Stream the audio response
+      res.setHeader('Content-Type', audioResponse.headers.get('content-type') || 'audio/mpeg');
+      res.setHeader('Content-Disposition', `inline; filename="recording-${callId}.mp3"`);
+      
+      const arrayBuffer = await audioResponse.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
+    } else if ((provider === 'retell' || provider === 'vapi') && recording_url) {
+      // For Retell and VAPI, the recording_url is a presigned S3 URL - direct access
+      const audioResponse = await fetch(recording_url);
+
+      if (!audioResponse.ok) {
+        console.error(`${provider} recording error: ${audioResponse.status} ${audioResponse.statusText}`);
+        return res.status(404).json({ error: 'Recording not available' });
+      }
+
+      res.setHeader('Content-Type', audioResponse.headers.get('content-type') || 'audio/wav');
+      res.setHeader('Content-Disposition', `inline; filename="recording-${callId}.wav"`);
+      
+      const arrayBuffer = await audioResponse.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
+    } else if (recording_url) {
+      // Generic fallback - try to fetch the recording URL directly
+      const audioResponse = await fetch(recording_url);
+
+      if (!audioResponse.ok) {
+        return res.status(404).json({ error: 'Recording not available' });
+      }
+
+      res.setHeader('Content-Type', audioResponse.headers.get('content-type') || 'audio/mpeg');
+      res.setHeader('Content-Disposition', `inline; filename="recording-${callId}.mp3"`);
+      
+      const arrayBuffer = await audioResponse.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
+    } else {
+      res.status(404).json({ error: 'Recording not available for this call' });
+    }
+  } catch (error) {
+    console.error('Error fetching recording:', error);
+    res.status(500).json({ error: 'Failed to fetch recording' });
+  }
+});
+
+/**
  * Re-analyze a production call
  */
 router.post('/calls/:callId/reanalyze', async (req: AuthenticatedRequest, res: Response) => {
@@ -427,6 +511,18 @@ router.post('/calls/:callId/reanalyze', async (req: AuthenticatedRequest, res: R
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Call not found' });
+    }
+
+    // Deduct credits for re-analysis
+    const cost = await getFeatureCreditCost(FeatureKeys.PRODUCTION_CALL_ANALYZE);
+    const creditDeducted = await deductCredits(
+      userId,
+      cost,
+      `Re-analyze production call`,
+      { callId }
+    );
+    if (!creditDeducted) {
+      return res.status(402).json({ error: 'Insufficient credits to analyze call' });
     }
 
     // Trigger re-analysis
@@ -488,6 +584,467 @@ router.delete('/calls/:callId', async (req: AuthenticatedRequest, res: Response)
   } catch (error) {
     console.error('Error deleting call:', error);
     res.status(500).json({ error: 'Failed to delete call' });
+  }
+});
+
+// ============================================
+// POLLING ENDPOINTS
+// ============================================
+
+/**
+ * Enable polling for an agent
+ */
+router.post('/polling/:agentId/enable', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { agentId } = req.params;
+    const { intervalSeconds = 30 } = req.body;
+
+    // Check if monitoring is already enabled for this agent
+    const existingSession = await pool.query(
+      `SELECT polling_enabled FROM monitoring_sessions WHERE user_id = $1 AND agent_id = $2`,
+      [userId, agentId]
+    );
+    
+    const isNewEnable = !existingSession.rows[0]?.polling_enabled;
+
+    // Deduct credits only for new monitoring enablement
+    if (isNewEnable) {
+      const cost = await getFeatureCreditCost(FeatureKeys.PRODUCTION_MONITORING_ENABLE);
+      const creditDeducted = await deductCredits(
+        userId,
+        cost,
+        `Enable production monitoring for agent`,
+        { agentId }
+      );
+      if (!creditDeducted) {
+        return res.status(402).json({ error: 'Insufficient credits to enable monitoring' });
+      }
+    }
+
+    // Validate interval (min 15 seconds, max 300 seconds)
+    const interval = Math.max(15, Math.min(300, intervalSeconds));
+
+    // Generate webhook URL for fallback (but we'll use polling)
+    const baseUrl = process.env.WEBHOOK_BASE_URL || process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
+    
+    // Get agent provider
+    const agentResult = await pool.query(
+      `SELECT provider FROM agents WHERE id = $1 AND user_id = $2`,
+      [agentId, userId]
+    );
+
+    if (agentResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    const webhookUrl = `${baseUrl}/api/webhooks/${agentResult.rows[0].provider}`;
+
+    // Create or update monitoring session with polling enabled
+    const result = await pool.query(
+      `INSERT INTO monitoring_sessions (user_id, agent_id, webhook_url, polling_enabled, polling_interval_seconds, is_active, sync_method)
+       VALUES ($1, $2, $3, true, $4, true, 'polling')
+       ON CONFLICT (user_id, agent_id)
+       DO UPDATE SET 
+         polling_enabled = true, 
+         polling_interval_seconds = $4, 
+         is_active = true,
+         sync_method = 'polling',
+         updated_at = NOW()
+       RETURNING *`,
+      [userId, agentId, webhookUrl, interval]
+    );
+
+    // Start polling
+    callPollingService.startPolling(agentId, interval);
+
+    res.json({
+      session: result.rows[0],
+      message: `Polling enabled with ${interval}s interval`,
+      pollingStatus: callPollingService.getPollingStatus(agentId)
+    });
+  } catch (error) {
+    console.error('Error enabling polling:', error);
+    res.status(500).json({ error: 'Failed to enable polling' });
+  }
+});
+
+/**
+ * Disable polling for an agent
+ */
+router.post('/polling/:agentId/disable', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { agentId } = req.params;
+
+    // Update session
+    const result = await pool.query(
+      `UPDATE monitoring_sessions 
+       SET polling_enabled = false, is_active = false, updated_at = NOW()
+       WHERE user_id = $1 AND agent_id = $2
+       RETURNING *`,
+      [userId, agentId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Monitoring session not found' });
+    }
+
+    // Stop polling
+    callPollingService.stopPolling(agentId);
+
+    res.json({
+      session: result.rows[0],
+      message: 'Polling disabled',
+      pollingStatus: callPollingService.getPollingStatus(agentId)
+    });
+  } catch (error) {
+    console.error('Error disabling polling:', error);
+    res.status(500).json({ error: 'Failed to disable polling' });
+  }
+});
+
+/**
+ * Manually trigger a sync/poll for an agent
+ */
+router.post('/polling/:agentId/sync', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { agentId } = req.params;
+
+    // Verify agent belongs to user
+    const agentResult = await pool.query(
+      `SELECT id FROM agents WHERE id = $1 AND user_id = $2`,
+      [agentId, userId]
+    );
+
+    if (agentResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    // Trigger immediate poll
+    const result = await callPollingService.pollAgentCalls(agentId);
+
+    res.json({
+      message: 'Sync completed',
+      result
+    });
+  } catch (error) {
+    console.error('Error syncing calls:', error);
+    res.status(500).json({ error: 'Failed to sync calls' });
+  }
+});
+
+/**
+ * Get polling status for an agent
+ */
+router.get('/polling/:agentId/status', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { agentId } = req.params;
+
+    // Get session info
+    const sessionResult = await pool.query(
+      `SELECT ms.*, a.name as agent_name, a.provider
+       FROM monitoring_sessions ms
+       JOIN agents a ON ms.agent_id = a.id
+       WHERE ms.agent_id = $1 AND ms.user_id = $2`,
+      [agentId, userId]
+    );
+
+    // Get call stats
+    const statsResult = await pool.query(
+      `SELECT 
+         COUNT(*) as total_calls,
+         COUNT(*) FILTER (WHERE analysis_status = 'completed') as analyzed_calls,
+         COUNT(*) FILTER (WHERE analysis_status IN ('pending', 'analyzing')) as pending_calls,
+         AVG(overall_score) as avg_score,
+         MAX(created_at) as last_call_at
+       FROM production_calls 
+       WHERE agent_id = $1`,
+      [agentId]
+    );
+
+    const pollingStatus = callPollingService.getPollingStatus(agentId);
+
+    res.json({
+      session: sessionResult.rows[0] || null,
+      stats: statsResult.rows[0],
+      pollingStatus
+    });
+  } catch (error) {
+    console.error('Error getting polling status:', error);
+    res.status(500).json({ error: 'Failed to get polling status' });
+  }
+});
+
+/**
+ * Get comprehensive overview of all monitoring
+ */
+router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+
+    // Get all agents with their monitoring status
+    const agentsResult = await pool.query(
+      `SELECT 
+         a.id, a.name, a.provider, a.provider_agent_id,
+         ms.is_active, ms.polling_enabled, ms.last_polled_at, ms.sync_method,
+         ms.polling_interval_seconds,
+         (SELECT COUNT(*) FROM production_calls pc WHERE pc.agent_id = a.id) as total_calls,
+         (SELECT COALESCE(SUM(issues_found), 0) FROM production_calls pc WHERE pc.agent_id = a.id AND analysis_status = 'completed') as issues_found,
+         (SELECT MAX(created_at) FROM production_calls pc WHERE pc.agent_id = a.id) as last_call_at
+       FROM agents a
+       LEFT JOIN monitoring_sessions ms ON a.id = ms.agent_id
+       WHERE a.user_id = $1
+       ORDER BY a.created_at DESC`,
+      [userId]
+    );
+
+    // Get overall stats
+    const overallStats = await pool.query(
+      `SELECT 
+         COUNT(*) as total_calls,
+         COUNT(*) FILTER (WHERE analysis_status = 'completed') as analyzed_calls,
+         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') as calls_today,
+         COALESCE(SUM(issues_found) FILTER (WHERE analysis_status = 'completed'), 0) as total_issues,
+         COUNT(DISTINCT agent_id) as agents_with_calls
+       FROM production_calls 
+       WHERE user_id = $1`,
+      [userId]
+    );
+
+    // Get recent issues
+    const recentIssues = await pool.query(
+      `SELECT 
+         pc.id as call_id,
+         a.name as agent_name,
+         pc.analysis->'issues' as issues,
+         pc.overall_score,
+         pc.created_at
+       FROM production_calls pc
+       JOIN agents a ON pc.agent_id = a.id
+       WHERE pc.user_id = $1 
+         AND pc.analysis_status = 'completed'
+         AND (pc.analysis->'issues')::jsonb != '[]'::jsonb
+       ORDER BY pc.created_at DESC
+       LIMIT 10`,
+      [userId]
+    );
+
+    res.json({
+      agents: agentsResult.rows,
+      stats: overallStats.rows[0],
+      recentIssues: recentIssues.rows,
+      activePolling: callPollingService.getActivePollingAgents()
+    });
+  } catch (error) {
+    console.error('Error getting monitoring overview:', error);
+    res.status(500).json({ error: 'Failed to get monitoring overview' });
+  }
+});
+
+/**
+ * Get all monitored agents
+ */
+router.get('/agents', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+
+    const result = await pool.query(
+      `SELECT 
+         ma.id,
+         ma.agent_id,
+         a.name,
+         a.provider,
+         ma.polling_enabled,
+         ma.created_at,
+         (SELECT COUNT(*) FROM production_calls pc WHERE pc.agent_id = a.id) as total_calls,
+         (SELECT COUNT(*) FROM production_calls pc WHERE pc.agent_id = a.id AND analysis_status = 'completed') as analyzed_calls,
+         (SELECT COALESCE(SUM(issues_found), 0) FROM production_calls pc WHERE pc.agent_id = a.id AND analysis_status = 'completed') as issues_found,
+         (SELECT MAX(created_at) FROM production_calls pc WHERE pc.agent_id = a.id) as last_call_at
+       FROM monitored_agents ma
+       JOIN agents a ON ma.agent_id = a.id
+       WHERE ma.user_id = $1
+       ORDER BY ma.created_at DESC`,
+      [userId]
+    );
+
+    // Get overall stats
+    const statsResult = await pool.query(
+      `SELECT 
+         COUNT(*) as total_calls,
+         COUNT(*) FILTER (WHERE analysis_status = 'completed') as analyzed_calls,
+         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') as calls_today,
+         COALESCE(SUM(issues_found) FILTER (WHERE analysis_status = 'completed'), 0) as total_issues
+       FROM production_calls 
+       WHERE user_id = $1`,
+      [userId]
+    );
+
+    res.json({
+      agents: result.rows,
+      stats: {
+        ...statsResult.rows[0],
+        active_agents: result.rows.filter((a: { polling_enabled: boolean }) => a.polling_enabled).length
+      }
+    });
+  } catch (error) {
+    console.error('Error getting monitored agents:', error);
+    res.status(500).json({ error: 'Failed to get monitored agents' });
+  }
+});
+
+/**
+ * Get a single monitored agent
+ */
+router.get('/agents/:agentId', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { agentId } = req.params;
+
+    const result = await pool.query(
+      `SELECT 
+         a.id, a.name, a.provider, a.provider_agent_id,
+         ma.polling_enabled, ma.created_at as monitored_since
+       FROM agents a
+       LEFT JOIN monitored_agents ma ON a.id = ma.agent_id
+       WHERE a.id = $1 AND a.user_id = $2`,
+      [agentId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    res.json({ agent: result.rows[0] });
+  } catch (error) {
+    console.error('Error getting monitored agent:', error);
+    res.status(500).json({ error: 'Failed to get monitored agent' });
+  }
+});
+
+/**
+ * Add an agent to monitoring
+ */
+router.post('/agents', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { agentId } = req.body;
+
+    if (!agentId) {
+      return res.status(400).json({ error: 'agentId is required' });
+    }
+
+    // Verify agent belongs to user
+    const agentCheck = await pool.query(
+      'SELECT id FROM agents WHERE id = $1 AND user_id = $2',
+      [agentId, userId]
+    );
+
+    if (agentCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    // Check if already monitored
+    const existing = await pool.query(
+      'SELECT id FROM monitored_agents WHERE agent_id = $1 AND user_id = $2',
+      [agentId, userId]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'Agent is already being monitored' });
+    }
+
+    // Add to monitored agents
+    const result = await pool.query(
+      `INSERT INTO monitored_agents (id, user_id, agent_id, polling_enabled, created_at)
+       VALUES ($1, $2, $3, false, NOW())
+       RETURNING *`,
+      [crypto.randomUUID(), userId, agentId]
+    );
+
+    res.status(201).json({ monitoredAgent: result.rows[0] });
+  } catch (error) {
+    console.error('Error adding agent to monitoring:', error);
+    res.status(500).json({ error: 'Failed to add agent to monitoring' });
+  }
+});
+
+/**
+ * Remove an agent from monitoring
+ */
+router.delete('/agents/:agentId', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { agentId } = req.params;
+
+    // Stop polling if active
+    callPollingService.stopPolling(agentId);
+
+    // Remove from monitored agents
+    await pool.query(
+      'DELETE FROM monitored_agents WHERE agent_id = $1 AND user_id = $2',
+      [agentId, userId]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error removing agent from monitoring:', error);
+    res.status(500).json({ error: 'Failed to remove agent from monitoring' });
+  }
+});
+
+/**
+ * Analyze pending calls for an agent
+ */
+router.post('/calls/:agentId/analyze', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { agentId } = req.params;
+
+    // Verify agent belongs to user
+    const agentResult = await pool.query(
+      'SELECT id FROM agents WHERE id = $1 AND user_id = $2',
+      [agentId, userId]
+    );
+
+    if (agentResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    // Get pending calls for this agent (including stuck analyzing ones)
+    const pendingCalls = await pool.query(
+      `SELECT id FROM production_calls 
+       WHERE agent_id = $1 AND analysis_status IN ('pending', 'analyzing')
+       ORDER BY created_at DESC
+       LIMIT 10`,
+      [agentId]
+    );
+
+    const callsToAnalyze = pendingCalls.rows;
+    console.log(`[Monitoring] Analyzing ${callsToAnalyze.length} pending calls for agent ${agentId}`);
+
+    // Start analysis for each call
+    const analysisPromises = callsToAnalyze.map(call => 
+      realtimeAnalysisService.processCall(call.id).catch(err => {
+        console.error(`[Monitoring] Analysis failed for call ${call.id}:`, err);
+        return { id: call.id, error: err.message };
+      })
+    );
+
+    // Don't wait for all to complete - just start them
+    Promise.all(analysisPromises).then(results => {
+      console.log(`[Monitoring] Completed analysis for ${results.length} calls`);
+    });
+
+    res.json({ 
+      message: `Started analysis for ${callsToAnalyze.length} calls`,
+      callIds: callsToAnalyze.map(c => c.id)
+    });
+  } catch (error) {
+    console.error('Error triggering analysis:', error);
+    res.status(500).json({ error: 'Failed to trigger analysis' });
   }
 });
 
