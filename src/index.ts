@@ -179,20 +179,35 @@ const startServer = async () => {
 };
 
 // Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', (error: any) => {
+  // Don't crash on Redis/ioredis connection errors
+  const errorStr = String(error?.message || error || '');
+  const isRedisError = 
+    error?.code === 'ECONNREFUSED' ||
+    errorStr.includes('ECONNREFUSED') ||
+    errorStr.includes('6379') ||
+    errorStr.includes('Redis');
+  
+  if (isRedisError) {
+    return; // Don't crash on Redis errors
+  }
+  
   console.error('Uncaught Exception:', error);
   process.exit(1);
 });
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason: any, promise) => {
-  // Don't crash on Redis connection errors - these are expected when Redis is unavailable
-  const isRedisError = reason?.code === 'ECONNREFUSED' && 
-    (reason?.message?.includes('6379') || reason?.address === '127.0.0.1' || reason?.address === '::1');
+  // Don't crash on Redis/ioredis connection errors
+  const reasonStr = String(reason?.message || reason || '');
+  const isRedisError = 
+    reason?.code === 'ECONNREFUSED' ||
+    reasonStr.includes('ECONNREFUSED') ||
+    reasonStr.includes('6379') ||
+    reasonStr.includes('Redis');
   
   if (isRedisError) {
-    // Silently ignore Redis connection retry rejections
-    return;
+    return; // Silently ignore Redis connection retry rejections
   }
   
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);

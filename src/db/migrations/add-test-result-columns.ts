@@ -33,5 +33,7 @@ export const addTestResultColumns = async () => {
   }
 };
 
-// Run migration
-addTestResultColumns().then(() => process.exit(0)).catch(() => process.exit(1));
+// Run migration only if executed directly
+if (require.main === module) {
+  addTestResultColumns().then(() => process.exit(0)).catch(() => process.exit(1));
+}
