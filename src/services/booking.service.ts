@@ -92,6 +92,8 @@ class BookingService {
         const duration = data.duration_minutes || 60;
         const endDateTime = this.addMinutesToISO(startDateTime, duration);
 
+        console.log('[BookingService] Calendar event times:', { startDateTime, endDateTime, duration });
+
         const calendarResult = await googleCalendarService.createMeetingEvent({
           summary: `STABLR Platform Demo - ${data.guest_name}`,
           description: this.buildEventDescription(data),
@@ -367,10 +369,20 @@ class BookingService {
   private addMinutesToISO(isoString: string, minutes: number): string {
     const date = new Date(isoString);
     date.setMinutes(date.getMinutes() + minutes);
+
     // Preserve the original offset portion
     const offset = isoString.slice(-6);
+
+    // Convert UTC time back to the target timezone's local time
+    // by applying the offset before formatting with getUTC* methods
+    const sign = offset[0] === '+' ? 1 : -1;
+    const offsetHours = parseInt(offset.slice(1, 3));
+    const offsetMinutes = parseInt(offset.slice(4, 6));
+    const totalOffsetMs = sign * (offsetHours * 60 + offsetMinutes) * 60 * 1000;
+    const localDate = new Date(date.getTime() + totalOffsetMs);
+
     const pad = (n: number) => String(n).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:00${offset}`;
+    return `${localDate.getUTCFullYear()}-${pad(localDate.getUTCMonth() + 1)}-${pad(localDate.getUTCDate())}T${pad(localDate.getUTCHours())}:${pad(localDate.getUTCMinutes())}:00${offset}`;
   }
 
   private buildEventDescription(data: CreateBookingDTO): string {
