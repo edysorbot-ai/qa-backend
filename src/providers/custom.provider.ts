@@ -87,7 +87,7 @@ export class CustomProvider implements VoiceProviderClient {
         apiKey: process.env.OPENROUTER_API_KEY,
         defaultHeaders: {
           'HTTP-Referer': process.env.FRONTEND_URL || 'http://localhost:3000',
-          'X-Title': 'Voice QA Platform',
+          'X-Title': 'STABLR Platform',
         },
       });
     }

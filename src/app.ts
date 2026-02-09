@@ -16,6 +16,7 @@ import monitoringRoutes from './routes/monitoring.routes';
 import observabilityRoutes from './routes/observability.routes';
 import superadminRoutes from './routes/superadmin.routes';
 import adminLogsRoutes from './routes/admin.logs.routes';
+import bookingRoutes from './routes/booking.routes';
 
 const app = express();
 
@@ -77,7 +78,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   explorer: true,
   customCss: '.swagger-ui .topbar { display: none }',
-  customSiteTitle: 'Voice Agent QA API Docs',
+  customSiteTitle: 'STABLR API Docs',
 }));
 
 // Swagger JSON spec
@@ -271,6 +272,60 @@ app.get('/api/enabled-integrations', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch enabled integrations' });
   }
 });
+
+// Public booking routes (no auth - anyone can book a demo)
+app.use('/api/booking', bookingRoutes);
+
+// ─── Google OAuth2 one-time setup routes ────────────────────────────────────
+// Step 1: Visit /api/google/auth → redirects to Google consent screen
+// Step 2: Google redirects back to /api/google/callback → shows refresh token
+// Step 3: Copy the refresh token into GOOGLE_REFRESH_TOKEN env var and restart
+import { googleCalendarService } from './services/googleCalendar.service';
+
+app.get('/api/google/auth', (req, res) => {
+  const authUrl = googleCalendarService.getAuthUrl();
+  if (!authUrl) {
+    return res.status(500).json({
+      error: 'Google OAuth2 not configured',
+      help: 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars first',
+    });
+  }
+  res.redirect(authUrl);
+});
+
+app.get('/api/google/callback', async (req, res) => {
+  const code = req.query.code as string;
+  if (!code) {
+    return res.status(400).json({ error: 'Missing authorization code' });
+  }
+
+  const refreshToken = await googleCalendarService.exchangeCode(code);
+  if (!refreshToken) {
+    return res.status(500).send(`
+      <html><body style="font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px;">
+        <h2 style="color:#dc2626;">❌ Failed to get refresh token</h2>
+        <p>Try revoking app access at <a href="https://myaccount.google.com/permissions">Google Account Permissions</a> and try again.</p>
+        <a href="/api/google/auth">↩ Try Again</a>
+      </body></html>
+    `);
+  }
+
+  res.send(`
+    <html><body style="font-family:sans-serif;max-width:700px;margin:40px auto;padding:20px;">
+      <h2 style="color:#16a34a;">✅ Google Calendar Connected!</h2>
+      <p>Add this to your <code>.env</code> file and restart the server:</p>
+      <pre style="background:#f1f5f9;padding:16px;border-radius:8px;overflow-x:auto;font-size:14px;">GOOGLE_REFRESH_TOKEN=${refreshToken}</pre>
+      <p style="color:#6b7280;font-size:13px;">
+        This token lets STABLR create Google Calendar events with Meet links on your behalf.<br/>
+        Keep it secret — never commit it to version control.
+      </p>
+      <p style="margin-top:24px;color:#16a34a;font-weight:600;">
+        ✓ Calendar is already active for this session. Bookings will create Meet links now.
+      </p>
+    </body></html>
+  `);
+});
+// ─── End Google OAuth2 routes ───────────────────────────────────────────────
 
 // Public webhook routes (no auth - receives callbacks from providers)
 app.use('/api/webhooks', webhookRoutes);

@@ -1,8 +1,7 @@
-import { Pool } from 'pg';
-import { pool } from '../index';
+import { pool as dbPool } from '../index';
 
-async function migrate() {
-  const client = await pool.connect();
+export async function addConsistencyTests() {
+  const client = await dbPool.connect();
   
   try {
     await client.query('BEGIN');
@@ -80,8 +79,10 @@ async function migrate() {
     throw error;
   } finally {
     client.release();
-    await pool.end();
   }
 }
 
-migrate().catch(console.error);
+// Allow running directly: npx tsx src/db/migrations/023_add_consistency_tests.ts
+if (require.main === module) {
+  addConsistencyTests().then(() => dbPool.end()).catch(console.error);
+}

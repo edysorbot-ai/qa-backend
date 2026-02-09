@@ -4,9 +4,9 @@ const options: swaggerJsdoc.Options = {
   definition: {
     openapi: '3.0.0',
     info: {
-      title: 'Voice Agent QA Platform API',
+      title: 'STABLR Platform API',
       version: '1.0.0',
-      description: 'API documentation for Voice Agent QA Platform - Automated testing for voice agents (ElevenLabs, Retell, VAPI, OpenAI Realtime)',
+      description: 'API documentation for STABLR Platform - Automated testing for voice agents (ElevenLabs, Retell, VAPI, OpenAI Realtime)',
       contact: {
         name: 'API Support',
       },

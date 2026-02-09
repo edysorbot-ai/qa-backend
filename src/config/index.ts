@@ -23,4 +23,12 @@ export const config = {
     apiKey: process.env.OPENAI_API_KEY || '',
     orgId: process.env.OPENAI_ORG_ID || '',
   },
+
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID || '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+    refreshToken: process.env.GOOGLE_REFRESH_TOKEN || '',
+    calendarId: process.env.GOOGLE_CALENDAR_ID || 'primary',
+    redirectUri: process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5000/api/google/callback',
+  },
 };

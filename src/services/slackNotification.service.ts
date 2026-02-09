@@ -54,13 +54,13 @@ export class SlackNotificationService {
 
     try {
       const testMessage = {
-        text: '✅ Voice Agent QA connected successfully!',
+        text: '✅ STABLR connected successfully!',
         blocks: [
           {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: '*✅ Voice Agent QA Connected*\n\nYou will receive test failure alerts in this channel.'
+              text: '*✅ STABLR Connected*\n\nYou will receive test failure alerts in this channel.'
             }
           }
         ]

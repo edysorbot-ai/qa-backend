@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import { query } from '../db';
+import { userService } from '../services/user.service';
+import { teamMemberService } from '../services/teamMember.service';
 
 interface ObservabilityMetrics {
   totalCalls: number;
@@ -29,7 +31,9 @@ export class ObservabilityController {
    */
   async getMetrics(req: Request, res: Response): Promise<void> {
     try {
-      const userId = (req as any).userId;
+      const clerkUser = (req as any).auth;
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      const userId = await teamMemberService.getOwnerUserId(user.id);
       const { agentId, timeRange } = req.query;
       
       // Calculate time intervals based on timeRange
@@ -59,11 +63,14 @@ export class ObservabilityController {
       const currentMetricsQuery = `
         SELECT 
           COUNT(*) as total_calls,
-          AVG(CASE WHEN tres.metrics->>'overallScore' IS NOT NULL 
-              THEN (tres.metrics->>'overallScore')::numeric ELSE 0 END) as avg_score,
+          AVG(COALESCE(
+            (tres.metrics->>'overallScore')::numeric,
+            (tres.metrics->>'score')::numeric,
+            0
+          )) as avg_score,
           COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / 
             NULLIF(COUNT(*)::float, 0) * 100 as success_rate,
-          AVG(tres.duration_ms / 1000.0) as avg_duration,
+          AVG(COALESCE(tres.duration_ms, tres.latency_ms, 0) / 1000.0) as avg_duration,
           COUNT(CASE WHEN tres.status = 'failed' THEN 1 END) as issues_found
         FROM test_results tres
         JOIN test_runs tr ON tres.test_run_id = tr.id
@@ -75,11 +82,14 @@ export class ObservabilityController {
       const previousMetricsQuery = `
         SELECT 
           COUNT(*) as total_calls,
-          AVG(CASE WHEN tres.metrics->>'overallScore' IS NOT NULL 
-              THEN (tres.metrics->>'overallScore')::numeric ELSE 0 END) as avg_score,
+          AVG(COALESCE(
+            (tres.metrics->>'overallScore')::numeric,
+            (tres.metrics->>'score')::numeric,
+            0
+          )) as avg_score,
           COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / 
             NULLIF(COUNT(*)::float, 0) * 100 as success_rate,
-          AVG(tres.duration_ms / 1000.0) as avg_duration,
+          AVG(COALESCE(tres.duration_ms, tres.latency_ms, 0) / 1000.0) as avg_duration,
           COUNT(CASE WHEN tres.status = 'failed' THEN 1 END) as issues_found
         FROM test_results tres
         JOIN test_runs tr ON tres.test_run_id = tr.id
@@ -110,7 +120,7 @@ export class ObservabilityController {
       // Get alert count
       const alertsResult = await query(
         `SELECT COUNT(*) as count FROM alert_settings 
-         WHERE user_id = $1 AND active = true`,
+         WHERE user_id = $1 AND is_active = true`,
         [userId]
       );
 
@@ -155,7 +165,9 @@ export class ObservabilityController {
    */
   async getTrends(req: Request, res: Response): Promise<void> {
     try {
-      const userId = (req as any).userId;
+      const clerkUser = (req as any).auth;
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      const userId = await teamMemberService.getOwnerUserId(user.id);
       const { agentId, timeRange } = req.query;
 
       let intervalDays = 7;
@@ -173,17 +185,20 @@ export class ObservabilityController {
       const trendsQuery = `
         SELECT 
           DATE(tres.created_at) as date,
-          AVG(CASE WHEN tres.metrics->>'overallScore' IS NOT NULL 
-              THEN (tres.metrics->>'overallScore')::numeric ELSE 0 END) as score,
+          AVG(COALESCE(
+            (tres.metrics->>'overallScore')::numeric,
+            (tres.metrics->>'score')::numeric,
+            0
+          )) as score,
           COUNT(*) as calls,
           COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / 
             NULLIF(COUNT(*)::float, 0) * 100 as success_rate,
-          AVG(tres.duration_ms / 1000.0) as avg_duration
+          AVG(COALESCE(tres.duration_ms, tres.latency_ms, 0) / 1000.0) as avg_duration
         FROM test_results tres
         JOIN test_runs tr ON tres.test_run_id = tr.id
         WHERE tr.user_id = $1 
           ${agentFilter}
-          AND tres.created_at >= NOW() - INTERVAL '${intervalDays} days'
+          AND tres.created_at >= NOW() - make_interval(days => ${intervalDays})
         GROUP BY DATE(tres.created_at)
         ORDER BY date
       `;
@@ -213,7 +228,9 @@ export class ObservabilityController {
    */
   async getAlerts(req: Request, res: Response): Promise<void> {
     try {
-      const userId = (req as any).userId;
+      const clerkUser = (req as any).auth;
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      const userId = await teamMemberService.getOwnerUserId(user.id);
       const { agentId, limit = 10 } = req.query;
 
       // For now, return alerts based on recent test failures
@@ -251,7 +268,7 @@ export class ObservabilityController {
         id: row.id,
         type: 'error' as const,
         title: `Test Failed: ${row.test_case_name}`,
-        description: `Score: ${row.metrics?.overallScore || 0}%`,
+        description: `Score: ${row.metrics?.overallScore || row.metrics?.score || 0}%`,
         agentName: row.agent_name,
         timestamp: row.created_at,
         acknowledged: false,
@@ -269,7 +286,9 @@ export class ObservabilityController {
    */
   async getAgentPerformance(req: Request, res: Response): Promise<void> {
     try {
-      const userId = (req as any).userId;
+      const clerkUser = (req as any).auth;
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      const userId = await teamMemberService.getOwnerUserId(user.id);
       const { timeRange } = req.query;
 
       let intervalDays = 7;
@@ -285,15 +304,18 @@ export class ObservabilityController {
           a.id as agent_id,
           a.name as agent_name,
           COUNT(*) as total_calls,
-          AVG(CASE WHEN tres.metrics->>'overallScore' IS NOT NULL 
-              THEN (tres.metrics->>'overallScore')::numeric ELSE 0 END) as avg_score,
+          AVG(COALESCE(
+            (tres.metrics->>'overallScore')::numeric,
+            (tres.metrics->>'score')::numeric,
+            0
+          )) as avg_score,
           COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / 
             NULLIF(COUNT(*)::float, 0) * 100 as success_rate
         FROM test_results tres
         JOIN test_runs tr ON tres.test_run_id = tr.id
         JOIN agents a ON tr.agent_id = a.id
         WHERE tr.user_id = $1 
-          AND tres.created_at >= NOW() - INTERVAL '${intervalDays} days'
+          AND tres.created_at >= NOW() - make_interval(days => ${intervalDays})
         GROUP BY a.id, a.name
         ORDER BY avg_score DESC
       `;
@@ -321,7 +343,9 @@ export class ObservabilityController {
    */
   async getIssueBreakdown(req: Request, res: Response): Promise<void> {
     try {
-      const userId = (req as any).userId;
+      const clerkUser = (req as any).auth;
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      const userId = await teamMemberService.getOwnerUserId(user.id);
       const { agentId, timeRange } = req.query;
 
       let intervalDays = 7;
@@ -340,13 +364,13 @@ export class ObservabilityController {
       const issuesQuery = `
         SELECT 
           tres.metrics,
-          tres.analysis
+          tres.test_case_name
         FROM test_results tres
         JOIN test_runs tr ON tres.test_run_id = tr.id
         WHERE tr.user_id = $1 
           ${agentFilter}
           AND tres.status = 'failed'
-          AND tres.created_at >= NOW() - INTERVAL '${intervalDays} days'
+          AND tres.created_at >= NOW() - make_interval(days => ${intervalDays})
       `;
 
       const result = await query(
@@ -365,11 +389,13 @@ export class ObservabilityController {
       };
 
       result.rows.forEach(row => {
-        const analysis = row.analysis || {};
+        const metrics = row.metrics || {};
+        const analysis = metrics.analysis || {};
         const issues = analysis.issues || [];
+        const reasoning = metrics.reasoning || '';
         
         issues.forEach((issue: any) => {
-          const issueType = issue.type || 'Other';
+          const issueType = issue.type || '';
           if (issueType.toLowerCase().includes('hallucin')) {
             issueCounts['Hallucination']++;
           } else if (issueType.toLowerCase().includes('script') || issueType.toLowerCase().includes('deviation')) {
@@ -384,6 +410,16 @@ export class ObservabilityController {
             issueCounts['Wrong Information']++;
           }
         });
+        
+        // For batched results that have reasoning but no structured issues
+        if (issues.length === 0 && reasoning) {
+          const r = reasoning.toLowerCase();
+          if (r.includes('hallucin')) issueCounts['Hallucination']++;
+          else if (r.includes('off-topic') || r.includes('deviat')) issueCounts['Script Deviation']++;
+          else if (r.includes('incomplete') || r.includes('missing')) issueCounts['Incomplete Response']++;
+          else if (r.includes('wrong') || r.includes('incorrect')) issueCounts['Wrong Information']++;
+          else issueCounts['Script Deviation']++;
+        }
       });
 
       const totalIssues = Object.values(issueCounts).reduce((a, b) => a + b, 0) || 1;

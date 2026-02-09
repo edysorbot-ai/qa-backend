@@ -1,7 +1,7 @@
 {
   "name": "qa-backend",
   "version": "1.0.0",
-  "description": "Voice Agent QA Platform Backend",
+  "description": "STABLR Platform Backend",
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
@@ -31,6 +31,8 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
+    "google-auth-library": "^10.5.0",
+    "googleapis": "^171.4.0",
     "helmet": "^8.1.0",
     "ioredis": "^5.8.2",
     "jsonwebtoken": "^9.0.3",

@@ -18,7 +18,7 @@ export class EmailNotificationService {
     const smtpPort = parseInt(process.env.SMTP_PORT || '587');
     const smtpUser = process.env.SMTP_USER;
     const smtpPass = process.env.SMTP_PASS;
-    const smtpFrom = process.env.SMTP_FROM || 'noreply@voiceagentqa.com';
+    const smtpFrom = process.env.SMTP_FROM || 'noreply@stablr.ai';
 
     if (smtpHost && smtpUser && smtpPass) {
       this.transporter = nodemailer.createTransport({
@@ -56,7 +56,7 @@ export class EmailNotificationService {
       const html = this.generateFailureAlertHtml(payload);
 
       await this.transporter.sendMail({
-        from: process.env.SMTP_FROM || 'noreply@voiceagentqa.com',
+        from: process.env.SMTP_FROM || 'noreply@stablr.ai',
         to: emails.join(', '),
         subject,
         html,
@@ -165,7 +165,7 @@ export class EmailNotificationService {
           </table>
 
           <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 12px;">
-            <p>This is an automated notification from Voice Agent QA Platform.</p>
+            <p>This is an automated notification from STABLR Platform.</p>
             <p>Test Run ID: ${payload.testRunId}</p>
           </div>
         </div>
@@ -366,11 +366,11 @@ export class EmailNotificationService {
     }
 
     try {
-      const subject = `🎉 Welcome to Voice Agent QA - Your Account is Ready!`;
+      const subject = `🎉 Welcome to STABLR - Your Account is Ready!`;
       const html = this.generateTeamMemberWelcomeHtml(data);
 
       await this.transporter.sendMail({
-        from: process.env.SMTP_FROM || 'noreply@voiceagentqa.com',
+        from: process.env.SMTP_FROM || 'noreply@stablr.ai',
         to: data.toEmail,
         subject,
         html,
@@ -406,11 +406,11 @@ export class EmailNotificationService {
       <html>
       <head>
         <meta charset="utf-8">
-        <title>Welcome to Voice Agent QA</title>
+        <title>Welcome to STABLR</title>
       </head>
       <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
         <div style="background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); padding: 40px 30px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: white; margin: 0; font-size: 28px;">🎉 Welcome to Voice Agent QA!</h1>
+          <h1 style="color: white; margin: 0; font-size: 28px;">🎉 Welcome to STABLR!</h1>
           <p style="color: rgba(255,255,255,0.9); margin: 15px 0 0 0; font-size: 16px;">
             Your team account is ready
           </p>
@@ -422,7 +422,7 @@ export class EmailNotificationService {
           </p>
           
           <p style="margin-bottom: 20px;">
-            <strong>${data.ownerName}</strong> has added you as a team member to their Voice Agent QA account. 
+            <strong>${data.ownerName}</strong> has added you as a team member to their STABLR account. 
             You now have full access to test and monitor voice agents.
           </p>
 
@@ -453,7 +453,7 @@ export class EmailNotificationService {
           </div>
 
           <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 12px;">
-            <p>This is an automated message from Voice Agent QA Platform.</p>
+            <p>This is an automated message from STABLR Platform.</p>
             <p>If you didn't expect this email, please contact your team administrator.</p>
           </div>
         </div>

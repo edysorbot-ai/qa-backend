@@ -3,6 +3,9 @@ import { pool } from '../db';
 import { getConsistencyTestService } from '../services/consistency-test.service';
 import { userService } from '../services/user.service';
 import { teamMemberService } from '../services/teamMember.service';
+import { getProviderClient } from '../providers/provider.factory';
+import { customProvider, CustomAgentConfig } from '../providers/custom.provider';
+import { Provider } from '../models/integration.model';
 
 /**
  * Start a consistency test
@@ -44,23 +47,60 @@ export async function startConsistencyTest(req: Request, res: Response, next: Ne
     }
 
     const service = getConsistencyTestService(pool);
+    const agent = agentResult.rows[0];
+    const provider = (agent.provider || 'custom').toLowerCase() as Provider;
+    const apiKey = agent.api_key || '';
+    const externalAgentId = agent.external_agent_id || agent.id;
 
-    // Mock agent call function - in production replace with actual agent call
-    const mockCallAgent = async (testCase: any) => {
+    // Real agent call function using provider chat APIs
+    const callAgent = async (testCase: any) => {
       const startTime = Date.now();
-      // This is a mock - in production, this would call the actual voice agent
-      const responses = [
-        `I'd be happy to help you with ${testCase.name}. Let me process your request.`,
-        `Sure, I can assist with ${testCase.name}. Here's what I can do for you.`,
-        `Of course! Regarding ${testCase.name}, I'm here to help.`,
-      ];
-      const response = responses[Math.floor(Math.random() * responses.length)];
-      
-      // Simulate some latency
-      await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 200));
-      
+
+      // Build the user message from the test case
+      const userMessage = testCase.steps?.[0]?.input
+        || testCase.input
+        || testCase.description
+        || testCase.name;
+
+      let responseText = '';
+
+      if (provider === 'custom') {
+        // Custom agents need the config object from agent.config
+        const config: CustomAgentConfig = {
+          name: agent.name || 'Custom Agent',
+          systemPrompt: agent.config?.system_prompt || agent.config?.systemPrompt || agent.prompt || '',
+          startingMessage: agent.config?.starting_message || agent.config?.startingMessage || '',
+          llmModel: agent.config?.llm_model || agent.config?.llmModel || 'openai/gpt-4o-mini',
+          llmProvider: agent.config?.llm_provider || agent.config?.llmProvider || 'openrouter',
+          temperature: agent.config?.temperature ?? 0.7,
+          maxTokens: agent.config?.max_tokens || agent.config?.maxTokens || 1024,
+          knowledgeBase: agent.config?.knowledge_base || agent.config?.knowledgeBase || '',
+          responseStyle: agent.config?.response_style || agent.config?.responseStyle || 'conversational',
+        };
+
+        // Each iteration gets a fresh session so responses are independent
+        const sessionId = `consistency_${agent.id}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const chatResult = await customProvider.chat('custom', externalAgentId, userMessage, { sessionId, config });
+        responseText = chatResult?.output?.[0]?.message || '';
+      } else {
+        // External providers (vapi, elevenlabs, haptik, etc.) use the standard chat interface
+        const providerClient = getProviderClient(provider);
+
+        if (providerClient.supportsChatTesting?.() === false || !providerClient.chat) {
+          throw new Error(`Provider "${provider}" does not support text-based chat testing. Use voice-based tests instead.`);
+        }
+
+        // Each iteration gets a fresh session so responses are independent
+        const chatResult = await providerClient.chat(apiKey, externalAgentId, userMessage);
+        responseText = chatResult?.output?.[0]?.message || '';
+      }
+
+      if (!responseText) {
+        throw new Error(`Empty response from ${provider} agent for test case "${testCase.name}"`);
+      }
+
       return {
-        text: response,
+        text: responseText,
         latencyMs: Date.now() - startTime,
       };
     };
@@ -70,7 +110,7 @@ export async function startConsistencyTest(req: Request, res: Response, next: Ne
       testCaseId,
       effectiveUserId,
       iterations,
-      mockCallAgent
+      callAgent
     );
 
     res.status(201).json(result);

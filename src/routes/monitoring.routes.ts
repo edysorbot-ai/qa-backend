@@ -111,8 +111,8 @@ const WEBHOOK_INSTRUCTIONS: Record<string, {
 function generateElevenLabsWebhookToolJson(webhookUrl: string, webhookSecret: string): object {
   return {
     type: "webhook",
-    name: "voiceqa_monitoring",
-    description: "Sends conversation data to Voice QA monitoring platform for quality analysis. Call this tool at the end of every conversation with the conversation_id, agent_id, transcript text, and call duration.",
+    name: "stablr_monitoring",
+    description: "Sends conversation data to STABLR monitoring platform for quality analysis. Call this tool at the end of every conversation with the conversation_id, agent_id, transcript text, and call duration.",
     api_schema: {
       url: webhookUrl,
       method: "POST",
