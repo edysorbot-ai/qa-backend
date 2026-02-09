@@ -10,10 +10,12 @@
 
 import { BookingModel, CreateBookingDTO, Booking, TimeSlot } from '../models/booking.model';
 import { googleCalendarService } from './googleCalendar.service';
+import { google } from 'googleapis';
 import nodemailer from 'nodemailer';
 
 class BookingService {
   private transporter: nodemailer.Transporter | null = null;
+  private useGmailApi = false;
 
   constructor() {
     this.initializeSmtp();
@@ -29,18 +31,22 @@ class BookingService {
       this.transporter = nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
-        secure: smtpPort === 465, // true for 465 (SSL), false for 587 (STARTTLS)
+        secure: smtpPort === 465,
         auth: { user: smtpUser, pass: smtpPass },
-        connectionTimeout: 10000,  // 10s to connect
-        greetingTimeout: 10000,    // 10s for greeting
-        socketTimeout: 15000,      // 15s for socket
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
         tls: {
-          rejectUnauthorized: false, // Accept self-signed certs
+          rejectUnauthorized: false,
         },
       });
-      console.log(`[BookingService] SMTP transporter initialized (${smtpHost}:${smtpPort}, secure=${smtpPort === 465})`);
+      console.log(`[BookingService] SMTP transporter initialized (${smtpHost}:${smtpPort})`);
+    } else if (googleCalendarService.isConfigured()) {
+      // Fallback: use Gmail API over HTTPS (no SMTP ports needed)
+      this.useGmailApi = true;
+      console.log('[BookingService] Email via Gmail API (no SMTP configured)');
     } else {
-      console.warn('[BookingService] SMTP not configured - booking emails disabled');
+      console.warn('[BookingService] Email disabled - no SMTP or Google credentials configured');
     }
   }
 
@@ -163,8 +169,8 @@ class BookingService {
   // ─── Email ────────────────────────────────────────────────────────────────
 
   private async sendConfirmationEmail(booking: Booking, meetLink: string | null): Promise<boolean> {
-    if (!this.transporter) {
-      console.warn('[BookingService] Cannot send email - SMTP not configured');
+    if (!this.transporter && !this.useGmailApi) {
+      console.warn('[BookingService] Cannot send email - no email transport configured');
       return false;
     }
 
@@ -180,6 +186,8 @@ class BookingService {
     const displayHour = startHour === 0 ? 12 : startHour > 12 ? startHour - 12 : startHour;
     const timeFormatted = `${displayHour}:00 ${period}`;
 
+    const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'noreply@stablr.ai';
+    const subject = `STABLR — Demo Booking Confirmed | ${dateFormatted} at ${timeFormatted}`;
     const html = this.generateConfirmationHtml({
       guestName: booking.guest_name,
       date: dateFormatted,
@@ -189,20 +197,64 @@ class BookingService {
       bookingId: booking.id,
     });
 
-    try {
-      await this.transporter.sendMail({
-        from: process.env.SMTP_FROM || 'noreply@stablr.com',
-        to: booking.guest_email,
-        subject: `STABLR — Demo Booking Confirmed | ${dateFormatted} at ${timeFormatted}`,
-        html,
-      });
+    // Try SMTP first
+    if (this.transporter) {
+      try {
+        await this.transporter.sendMail({
+          from: fromEmail,
+          to: booking.guest_email,
+          subject,
+          html,
+        });
+        console.log('[BookingService] ✅ Email sent via SMTP to:', booking.guest_email);
+        return true;
+      } catch (smtpError: any) {
+        console.warn('[BookingService] SMTP failed:', smtpError.code || smtpError.message);
+        // Fall through to Gmail API
+      }
+    }
 
-      console.log('[BookingService] ✅ Confirmation email sent to:', booking.guest_email);
-      return true;
-    } catch (error) {
-      console.error('[BookingService] Email send failed:', error);
+    // Fallback: Gmail API over HTTPS (works even when SMTP ports are blocked)
+    try {
+      return await this.sendViaGmailApi(booking.guest_email, fromEmail, subject, html);
+    } catch (gmailError: any) {
+      console.error('[BookingService] Gmail API also failed:', gmailError.message);
       return false;
     }
+  }
+
+  /**
+   * Send email via Gmail API (HTTPS, port 443 — never blocked by cloud providers)
+   */
+  private async sendViaGmailApi(to: string, from: string, subject: string, html: string): Promise<boolean> {
+    const oauth2Client = googleCalendarService.getOAuth2Client();
+    if (!oauth2Client) {
+      console.warn('[BookingService] Gmail API unavailable - no OAuth2 client');
+      return false;
+    }
+
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    // Build RFC 2822 MIME message
+    const messageParts = [
+      `From: STABLR <${from}>`,
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=utf-8',
+      '',
+      html,
+    ];
+    const rawMessage = messageParts.join('\r\n');
+    const encodedMessage = Buffer.from(rawMessage).toString('base64url');
+
+    await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: encodedMessage },
+    });
+
+    console.log('[BookingService] ✅ Email sent via Gmail API to:', to);
+    return true;
   }
 
   private generateConfirmationHtml(params: {

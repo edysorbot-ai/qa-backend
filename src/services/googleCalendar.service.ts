@@ -16,6 +16,7 @@ import { google, calendar_v3 } from 'googleapis';
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/gmail.send',
 ];
 
 export class GoogleCalendarService {
@@ -105,6 +106,13 @@ export class GoogleCalendarService {
    */
   isConfigured(): boolean {
     return this.initialized && this.calendar !== null;
+  }
+
+  /**
+   * Get the OAuth2 client for use by other services (e.g. Gmail API)
+   */
+  getOAuth2Client() {
+    return this.oauth2Client;
   }
 
   /**

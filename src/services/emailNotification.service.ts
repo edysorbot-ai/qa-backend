@@ -1,54 +1,107 @@
 import nodemailer from 'nodemailer';
+import { google } from 'googleapis';
 import { config } from '../config';
 import { FailedTestAlertPayload } from '../models/alertSettings.model';
 import { alertSettingsService } from './alertSettings.service';
 import { slackNotificationService } from './slackNotification.service';
+import { googleCalendarService } from './googleCalendar.service';
 import pool from '../db';
 
 export class EmailNotificationService {
   private transporter: nodemailer.Transporter | null = null;
+  private useGmailApi = false;
 
   constructor() {
     this.initializeTransporter();
   }
 
   private initializeTransporter() {
-    // Check if SMTP settings are configured
     const smtpHost = process.env.SMTP_HOST;
     const smtpPort = parseInt(process.env.SMTP_PORT || '465');
     const smtpUser = process.env.SMTP_USER;
     const smtpPass = process.env.SMTP_PASS;
-    const smtpFrom = process.env.SMTP_FROM || 'noreply@stablr.ai';
 
     if (smtpHost && smtpUser && smtpPass) {
       this.transporter = nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
-        secure: smtpPort === 465, // true for 465 (SSL), false for 587 (STARTTLS)
-        auth: {
-          user: smtpUser,
-          pass: smtpPass,
-        },
-        connectionTimeout: 10000,  // 10s to connect
-        greetingTimeout: 10000,    // 10s for greeting
-        socketTimeout: 15000,      // 15s for socket
-        tls: {
-          rejectUnauthorized: false, // Accept self-signed certs
-        },
+        secure: smtpPort === 465,
+        auth: { user: smtpUser, pass: smtpPass },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+        tls: { rejectUnauthorized: false },
       });
-      console.log(`[EmailNotificationService] SMTP transporter initialized (${smtpHost}:${smtpPort}, secure=${smtpPort === 465})`);
+      console.log(`[EmailNotificationService] SMTP transporter initialized (${smtpHost}:${smtpPort})`);
+    } else if (googleCalendarService.isConfigured()) {
+      this.useGmailApi = true;
+      console.log('[EmailNotificationService] Email via Gmail API (no SMTP configured)');
     } else {
-      console.warn('[EmailNotificationService] SMTP not configured - email notifications disabled');
-      console.warn('[EmailNotificationService] Set SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM env vars to enable');
+      console.warn('[EmailNotificationService] Email disabled - no SMTP or Google credentials');
     }
+  }
+
+  /**
+   * Send email via Gmail API over HTTPS (works when SMTP ports are blocked)
+   */
+  private async sendViaGmailApi(to: string, from: string, subject: string, html: string): Promise<boolean> {
+    const oauth2Client = googleCalendarService.getOAuth2Client();
+    if (!oauth2Client) return false;
+
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const messageParts = [
+      `From: STABLR <${from}>`,
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=utf-8',
+      '',
+      html,
+    ];
+    const encodedMessage = Buffer.from(messageParts.join('\r\n')).toString('base64url');
+
+    await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: encodedMessage },
+    });
+    return true;
+  }
+
+  /**
+   * Send email: SMTP first, fallback to Gmail API
+   */
+  private async sendEmailInternal(to: string, subject: string, html: string): Promise<boolean> {
+    const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'noreply@stablr.ai';
+
+    if (this.transporter) {
+      try {
+        await this.transporter.sendMail({ from: fromEmail, to, subject, html });
+        console.log(`[EmailNotificationService] ✅ Email sent via SMTP to: ${to}`);
+        return true;
+      } catch (smtpErr: any) {
+        console.warn('[EmailNotificationService] SMTP failed:', smtpErr.code || smtpErr.message);
+      }
+    }
+
+    try {
+      const sent = await this.sendViaGmailApi(to, fromEmail, subject, html);
+      if (sent) {
+        console.log(`[EmailNotificationService] ✅ Email sent via Gmail API to: ${to}`);
+        return true;
+      }
+    } catch (gmailErr: any) {
+      console.error('[EmailNotificationService] Gmail API also failed:', gmailErr.message);
+    }
+
+    return false;
   }
 
   /**
    * Send test failure alert email
    */
   async sendFailureAlert(payload: FailedTestAlertPayload, emails: string[]): Promise<boolean> {
-    if (!this.transporter) {
-      console.warn('[EmailNotificationService] Cannot send email - SMTP not configured');
+    if (!this.transporter && !this.useGmailApi) {
+      console.warn('[EmailNotificationService] Cannot send email - no transport configured');
       return false;
     }
 
@@ -61,15 +114,11 @@ export class EmailNotificationService {
       const subject = `🚨 Test Failure Alert: ${payload.testRunName}`;
       const html = this.generateFailureAlertHtml(payload);
 
-      await this.transporter.sendMail({
-        from: process.env.SMTP_FROM || 'noreply@stablr.ai',
-        to: emails.join(', '),
-        subject,
-        html,
-      });
-
-      console.log(`[EmailNotificationService] Failure alert sent to: ${emails.join(', ')}`);
-      return true;
+      const sent = await this.sendEmailInternal(emails.join(', '), subject, html);
+      if (sent) {
+        console.log(`[EmailNotificationService] Failure alert sent to: ${emails.join(', ')}`);
+      }
+      return sent;
     } catch (error) {
       console.error('[EmailNotificationService] Failed to send email:', error);
       return false;
