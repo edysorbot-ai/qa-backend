@@ -15,7 +15,7 @@ export class EmailNotificationService {
   private initializeTransporter() {
     // Check if SMTP settings are configured
     const smtpHost = process.env.SMTP_HOST;
-    const smtpPort = parseInt(process.env.SMTP_PORT || '587');
+    const smtpPort = parseInt(process.env.SMTP_PORT || '465');
     const smtpUser = process.env.SMTP_USER;
     const smtpPass = process.env.SMTP_PASS;
     const smtpFrom = process.env.SMTP_FROM || 'noreply@stablr.ai';
@@ -24,13 +24,19 @@ export class EmailNotificationService {
       this.transporter = nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
-        secure: smtpPort === 465,
+        secure: smtpPort === 465, // true for 465 (SSL), false for 587 (STARTTLS)
         auth: {
           user: smtpUser,
           pass: smtpPass,
         },
+        connectionTimeout: 10000,  // 10s to connect
+        greetingTimeout: 10000,    // 10s for greeting
+        socketTimeout: 15000,      // 15s for socket
+        tls: {
+          rejectUnauthorized: false, // Accept self-signed certs
+        },
       });
-      console.log('[EmailNotificationService] SMTP transporter initialized');
+      console.log(`[EmailNotificationService] SMTP transporter initialized (${smtpHost}:${smtpPort}, secure=${smtpPort === 465})`);
     } else {
       console.warn('[EmailNotificationService] SMTP not configured - email notifications disabled');
       console.warn('[EmailNotificationService] Set SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM env vars to enable');

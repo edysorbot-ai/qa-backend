@@ -21,7 +21,7 @@ class BookingService {
 
   private initializeSmtp() {
     const smtpHost = process.env.SMTP_HOST;
-    const smtpPort = parseInt(process.env.SMTP_PORT || '587');
+    const smtpPort = parseInt(process.env.SMTP_PORT || '465');
     const smtpUser = process.env.SMTP_USER;
     const smtpPass = process.env.SMTP_PASS;
 
@@ -29,10 +29,16 @@ class BookingService {
       this.transporter = nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
-        secure: smtpPort === 465,
+        secure: smtpPort === 465, // true for 465 (SSL), false for 587 (STARTTLS)
         auth: { user: smtpUser, pass: smtpPass },
+        connectionTimeout: 10000,  // 10s to connect
+        greetingTimeout: 10000,    // 10s for greeting
+        socketTimeout: 15000,      // 15s for socket
+        tls: {
+          rejectUnauthorized: false, // Accept self-signed certs
+        },
       });
-      console.log('[BookingService] SMTP transporter initialized');
+      console.log(`[BookingService] SMTP transporter initialized (${smtpHost}:${smtpPort}, secure=${smtpPort === 465})`);
     } else {
       console.warn('[BookingService] SMTP not configured - booking emails disabled');
     }
