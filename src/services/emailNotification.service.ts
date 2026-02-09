@@ -49,10 +49,11 @@ export class EmailNotificationService {
     if (!oauth2Client) return false;
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const encodedSubject = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`;
     const messageParts = [
       `From: STABLR <${from}>`,
       `To: ${to}`,
-      `Subject: ${subject}`,
+      `Subject: ${encodedSubject}`,
       'MIME-Version: 1.0',
       'Content-Type: text/html; charset=utf-8',
       '',

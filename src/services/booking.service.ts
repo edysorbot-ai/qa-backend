@@ -187,7 +187,7 @@ class BookingService {
     const timeFormatted = `${displayHour}:00 ${period}`;
 
     const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'noreply@stablr.ai';
-    const subject = `STABLR — Demo Booking Confirmed | ${dateFormatted} at ${timeFormatted}`;
+    const subject = `STABLR - Demo Booking Confirmed | ${dateFormatted} at ${timeFormatted}`;
     const html = this.generateConfirmationHtml({
       guestName: booking.guest_name,
       date: dateFormatted,
@@ -235,11 +235,12 @@ class BookingService {
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    // Build RFC 2822 MIME message
+    // Build RFC 2822 MIME message with RFC 2047 encoded subject for non-ASCII safety
+    const encodedSubject = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`;
     const messageParts = [
       `From: STABLR <${from}>`,
       `To: ${to}`,
-      `Subject: ${subject}`,
+      `Subject: ${encodedSubject}`,
       'MIME-Version: 1.0',
       'Content-Type: text/html; charset=utf-8',
       '',
@@ -265,10 +266,6 @@ class BookingService {
     meetLink: string | null;
     bookingId: string;
   }): string {
-    const logoUrl = process.env.FRONTEND_URL
-      ? `${process.env.FRONTEND_URL}/stablrWhite.svg`
-      : 'http://localhost:3000/stablrWhite.svg';
-
     const meetSection = params.meetLink
       ? `
         <tr>
@@ -321,7 +318,7 @@ class BookingService {
                 <!-- Logo Header -->
                 <tr>
                   <td style="background: #111827; padding: 32px 40px; border-radius: 12px 12px 0 0; text-align: center;">
-                    <img src="${logoUrl}" alt="STABLR" width="120" style="display: inline-block; height: auto;" />
+                    <span style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: 0.15em;">STABLR</span>
                   </td>
                 </tr>
 
