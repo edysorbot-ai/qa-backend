@@ -72,10 +72,19 @@ export function getRedisConnection(): Redis | null {
   
   if (!redisConnection) {
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+    
+    // Skip Redis entirely in production if URL points to localhost (no Redis service configured)
+    if (process.env.NODE_ENV === 'production' && (redisUrl.includes('localhost') || redisUrl.includes('127.0.0.1'))) {
+      console.warn('[Queue] Redis not configured for production - Queue features disabled');
+      redisConnectionFailed = true;
+      return null;
+    }
+    
     try {
       redisConnection = new Redis(redisUrl, {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
+        lazyConnect: true,
         retryStrategy: (times) => {
           if (times > 3) {
             console.warn('[Queue] Redis unavailable - Queue features disabled. Install and start Redis to enable job queuing.');

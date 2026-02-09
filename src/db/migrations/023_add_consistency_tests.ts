@@ -1,7 +1,9 @@
+import { Pool } from 'pg';
 import { pool as dbPool } from '../index';
 
-export async function addConsistencyTests() {
-  const client = await dbPool.connect();
+export async function addConsistencyTests(pool?: Pool) {
+  const usePool = pool || dbPool;
+  const client = await usePool.connect();
   
   try {
     await client.query('BEGIN');
