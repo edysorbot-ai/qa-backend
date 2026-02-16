@@ -439,11 +439,15 @@ export class BatchedTestExecutorService {
     return new Promise(async (resolve) => {
       // User's integration API key takes priority over env var
       const effectiveApiKey = agentConfig.apiKey || this.elevenLabsApiKey;
-      const ttsService = new TTSService(effectiveApiKey);
       
       // Resolve base URL for ElevenLabs (supports custom domains like elevenlabs.in)
       const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
       const baseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
+      
+      // Pass baseUrl to TTS so it uses the correct regional endpoint
+      const ttsService = new TTSService(effectiveApiKey, agentConfig.baseUrl);
+      let ttsFailureCount = 0;
+      const MAX_TTS_FAILURES = 2; // Abort WebSocket if TTS fails this many times
       
       // Build the multi-scenario test caller prompt
       const systemPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
@@ -586,6 +590,12 @@ export class BatchedTestExecutorService {
               }, 30000);
             } catch (e) {
               console.error('[BatchedExecutor] TTS error:', e);
+              ttsFailureCount++;
+              if (ttsFailureCount >= MAX_TTS_FAILURES) {
+                console.error('[BatchedExecutor] TTS failed repeatedly - aborting WebSocket (wrong API URL or key)');
+                conversationComplete = true;
+                ws.close();
+              }
             }
           }
           
@@ -620,6 +630,12 @@ export class BatchedTestExecutorService {
                     await this.sendAudioToAgent(ws, ttsResult.audioBuffer);
                   } catch (e) {
                     console.error('[BatchedExecutor] Error sending greeting:', e);
+                    ttsFailureCount++;
+                    if (ttsFailureCount >= MAX_TTS_FAILURES) {
+                      console.error('[BatchedExecutor] TTS failed repeatedly - aborting WebSocket (wrong API URL or key)');
+                      conversationComplete = true;
+                      ws.close();
+                    }
                   }
                 }, 2000);
                 break;
