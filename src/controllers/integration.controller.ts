@@ -18,6 +18,7 @@ export class IntegrationController {
       const maskedIntegrations = integrations.map(i => ({
         ...i,
         api_key: i.api_key ? `****${i.api_key.slice(-4)}` : null,
+        base_url: i.base_url || null,
       }));
 
       res.json({ integrations: maskedIntegrations });
@@ -55,7 +56,7 @@ export class IntegrationController {
       // Get the effective user ID (owner's ID for team members)
       const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
-      const { provider, api_key, validate = false } = req.body;
+      const { provider, api_key, base_url, validate = false } = req.body;
 
       if (!provider || !api_key) {
         return res.status(400).json({ error: 'Provider and API key are required' });
@@ -67,6 +68,7 @@ export class IntegrationController {
           user_id: effectiveUserId,
           provider,
           api_key,
+          base_url: base_url || null,
         });
 
         if (!validation.valid || !integration) {
@@ -94,6 +96,7 @@ export class IntegrationController {
         user_id: effectiveUserId,
         provider,
         api_key,
+        base_url: base_url || null,
       });
 
       res.status(201).json({
@@ -110,12 +113,12 @@ export class IntegrationController {
   async update(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const { api_key, is_active } = req.body;
+      const { api_key, base_url, is_active } = req.body;
 
       // If API key is being updated, validate it first
       const { integration, validation } = await integrationService.updateWithValidation(
         id,
-        { api_key, is_active }
+        { api_key, base_url, is_active }
       );
 
       if (validation && !validation.valid) {
@@ -217,13 +220,13 @@ export class IntegrationController {
    */
   async validateKey(req: Request, res: Response, next: NextFunction) {
     try {
-      const { provider, api_key } = req.body;
+      const { provider, api_key, base_url } = req.body;
 
       if (!provider || !api_key) {
         return res.status(400).json({ error: 'Provider and API key are required' });
       }
 
-      const validation = await integrationService.validateApiKey(provider, api_key);
+      const validation = await integrationService.validateApiKey(provider, api_key, base_url);
 
       res.json({
         valid: validation.valid,

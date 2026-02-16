@@ -30,12 +30,12 @@ export class IntegrationService {
 
   async create(data: CreateIntegrationDTO): Promise<Integration> {
     const result = await query(
-      `INSERT INTO integrations (user_id, provider, api_key, is_active)
-       VALUES ($1, $2, $3, false)
+      `INSERT INTO integrations (user_id, provider, api_key, base_url, is_active)
+       VALUES ($1, $2, $3, $4, false)
        ON CONFLICT (user_id, provider) 
-       DO UPDATE SET api_key = $3, is_active = false, updated_at = CURRENT_TIMESTAMP
+       DO UPDATE SET api_key = $3, base_url = $4, is_active = false, updated_at = CURRENT_TIMESTAMP
        RETURNING *`,
-      [data.user_id, data.provider, data.api_key]
+      [data.user_id, data.provider, data.api_key, data.base_url || null]
     );
     return result.rows[0];
   }
@@ -48,6 +48,10 @@ export class IntegrationService {
     if (data.api_key !== undefined) {
       fields.push(`api_key = $${paramCount++}`);
       values.push(data.api_key);
+    }
+    if (data.base_url !== undefined) {
+      fields.push(`base_url = $${paramCount++}`);
+      values.push(data.base_url);
     }
     if (data.is_active !== undefined) {
       fields.push(`is_active = $${paramCount++}`);
@@ -78,10 +82,10 @@ export class IntegrationService {
    * Validate API key with the actual provider API
    * Returns detailed validation result including account info
    */
-  async validateApiKey(provider: Provider, apiKey: string): Promise<ProviderValidationResult> {
+  async validateApiKey(provider: Provider, apiKey: string, baseUrl?: string | null): Promise<ProviderValidationResult> {
     try {
       const client = getProviderClient(provider);
-      return await client.validateApiKey(apiKey);
+      return await client.validateApiKey(apiKey, baseUrl);
     } catch (error) {
       return {
         valid: false,
@@ -99,7 +103,7 @@ export class IntegrationService {
     validation: ProviderValidationResult;
   }> {
     // First validate the API key
-    const validation = await this.validateApiKey(data.provider, data.api_key);
+    const validation = await this.validateApiKey(data.provider, data.api_key, data.base_url);
 
     if (!validation.valid) {
       return { integration: null, validation };
@@ -130,7 +134,7 @@ export class IntegrationService {
         };
       }
 
-      const validation = await this.validateApiKey(existing.provider, data.api_key);
+      const validation = await this.validateApiKey(existing.provider, data.api_key, existing.base_url);
       if (!validation.valid) {
         return { integration: null, validation };
       }
@@ -155,7 +159,7 @@ export class IntegrationService {
 
     try {
       const client = getProviderClient(integration.provider);
-      return await client.listAgents(integration.api_key);
+      return await client.listAgents(integration.api_key, integration.base_url);
     } catch (error) {
       console.error(`Error listing agents for ${integration.provider}:`, error);
       return [];
@@ -173,7 +177,7 @@ export class IntegrationService {
 
     try {
       const client = getProviderClient(integration.provider);
-      return await client.getAgent(integration.api_key, agentId);
+      return await client.getAgent(integration.api_key, agentId, integration.base_url);
     } catch (error) {
       console.error(`Error getting agent ${agentId} from ${integration.provider}:`, error);
       return null;
@@ -189,7 +193,7 @@ export class IntegrationService {
       return { valid: false, message: 'Integration not found' };
     }
 
-    const validation = await this.validateApiKey(integration.provider, integration.api_key);
+    const validation = await this.validateApiKey(integration.provider, integration.api_key, integration.base_url);
     
     // Update is_active based on validation result
     if (validation.valid) {
@@ -217,7 +221,7 @@ export class IntegrationService {
     try {
       const client = getProviderClient(integration.provider);
       if (client.getLimits) {
-        const limits = await client.getLimits(integration.api_key);
+        const limits = await client.getLimits(integration.api_key, integration.base_url);
         return {
           ...limits,
           provider: integration.provider,

@@ -18,7 +18,7 @@ export interface TTSResponse {
   durationMs?: number;
 }
 
-const ELEVENLABS_TTS_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
+import { resolveElevenLabsBaseUrl } from '../providers/elevenlabs.provider';
 
 // Default voice IDs for testing (ElevenLabs)
 export const DEFAULT_VOICES = {
@@ -29,9 +29,11 @@ export const DEFAULT_VOICES = {
 
 export class TTSService {
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl?: string | null) {
     this.apiKey = apiKey;
+    this.baseUrl = resolveElevenLabsBaseUrl(baseUrl);
   }
 
   /**
@@ -41,7 +43,7 @@ export class TTSService {
     const voiceId = request.voiceId || DEFAULT_VOICES.neutral;
     const modelId = request.modelId || 'eleven_turbo_v2';
 
-    const response = await fetch(`${ELEVENLABS_TTS_URL}/${voiceId}`, {
+    const response = await fetch(`${this.baseUrl}/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: {
         'xi-api-key': this.apiKey,
@@ -87,7 +89,7 @@ export class TTSService {
     const modelId = request.modelId || 'eleven_turbo_v2';
 
     // Request PCM format with specific output format
-    const response = await fetch(`${ELEVENLABS_TTS_URL}/${voiceId}?output_format=pcm_16000`, {
+    const response = await fetch(`${this.baseUrl}/text-to-speech/${voiceId}?output_format=pcm_16000`, {
       method: 'POST',
       headers: {
         'xi-api-key': this.apiKey,
@@ -131,7 +133,7 @@ export class TTSService {
     const modelId = request.modelId || 'eleven_turbo_v2';
 
     // Request ulaw format at 8kHz
-    const response = await fetch(`${ELEVENLABS_TTS_URL}/${voiceId}?output_format=ulaw_8000`, {
+    const response = await fetch(`${this.baseUrl}/text-to-speech/${voiceId}?output_format=ulaw_8000`, {
       method: 'POST',
       headers: {
         'xi-api-key': this.apiKey,
@@ -189,4 +191,4 @@ export class TTSService {
   }
 }
 
-export const createTTSService = (apiKey: string) => new TTSService(apiKey);
+export const createTTSService = (apiKey: string, baseUrl?: string | null) => new TTSService(apiKey, baseUrl);

@@ -1420,11 +1420,12 @@ router.post('/start-batched',
     // Resolve API key - either from integration or directly provided
     let apiKey = directApiKey;
     let resolvedProvider = provider;
+    let baseUrl: string | null = null;
     
     if (integrationId && !directApiKey) {
       // Look up API key from integration
       const integrationResult = await pool.query(
-        'SELECT api_key, provider FROM integrations WHERE id = $1',
+        'SELECT api_key, provider, base_url FROM integrations WHERE id = $1',
         [integrationId]
       );
       
@@ -1437,6 +1438,7 @@ router.post('/start-batched',
       
       apiKey = integrationResult.rows[0].api_key;
       resolvedProvider = integrationResult.rows[0].provider;
+      baseUrl = integrationResult.rows[0].base_url || null;
     }
 
     // Custom agents don't need an API key - they use our own LLM
@@ -1588,7 +1590,7 @@ router.post('/start-batched',
     executeBatchedCalls(
       testRunId,
       batches,
-      { provider: resolvedProvider, agentId, apiKey, phoneNumber },
+      { provider: resolvedProvider, agentId, apiKey, phoneNumber, baseUrl },
       enableBatching,
       enableConcurrency,
       concurrencyCount
@@ -1618,7 +1620,7 @@ router.post('/start-batched',
 async function executeBatchedCalls(
   testRunId: string,
   batches: Array<{ id: string; name: string; testMode?: 'voice' | 'chat'; testCases: Array<{ id: string; name: string; scenario: string; expectedOutcome: string; category: string }> }>,
-  agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
+  agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string; baseUrl?: string | null },
   enableBatching: boolean,
   enableConcurrency: boolean = false,
   concurrencyCount: number = 1

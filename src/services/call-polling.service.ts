@@ -13,8 +13,8 @@
 import pool from '../db';
 import { realtimeAnalysisService } from './realtime-analysis.service';
 import { integrationService } from './integration.service';
+import { resolveElevenLabsBaseUrl } from '../providers/elevenlabs.provider';
 
-const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io/v1';
 const RETELL_BASE_URL = 'https://api.retellai.com';
 const VAPI_BASE_URL = 'https://api.vapi.ai';
 
@@ -70,9 +70,11 @@ class CallPollingService {
   async fetchElevenLabsCalls(
     apiKey: string,
     providerAgentId: string,
-    sinceTimestamp?: number
+    sinceTimestamp?: number,
+    baseUrl?: string | null
   ): Promise<ProviderCall[]> {
     try {
+      const ELEVENLABS_BASE_URL = resolveElevenLabsBaseUrl(baseUrl);
       const params = new URLSearchParams();
       params.append('agent_id', providerAgentId);
       params.append('page_size', '100');
@@ -405,7 +407,7 @@ class CallPollingService {
     try {
       // Get agent and integration info
       const agentResult = await pool.query(
-        `SELECT a.*, i.provider, i.api_key
+        `SELECT a.*, i.provider, i.api_key, i.base_url
          FROM agents a
          JOIN integrations i ON a.integration_id = i.id
          WHERE a.id = $1`,
@@ -420,6 +422,7 @@ class CallPollingService {
       const agent = agentResult.rows[0];
       result.provider = agent.provider;
       const apiKey = agent.api_key;
+      const baseUrl = agent.base_url;
       const providerAgentId = agent.provider_agent_id;
 
       if (!providerAgentId) {
@@ -440,7 +443,7 @@ class CallPollingService {
       
       switch (agent.provider) {
         case 'elevenlabs':
-          providerCalls = await this.fetchElevenLabsCalls(apiKey, providerAgentId, sinceTimestamp);
+          providerCalls = await this.fetchElevenLabsCalls(apiKey, providerAgentId, sinceTimestamp, baseUrl);
           break;
         case 'retell':
           providerCalls = await this.fetchRetellCalls(apiKey, providerAgentId, sinceTimestamp);

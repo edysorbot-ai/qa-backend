@@ -30,6 +30,7 @@ import { addPollingConfigToMonitoring } from './db/migrations/026_add_polling_co
 import { up as createMonitoredAgents } from './db/migrations/027_create_monitored_agents';
 import { addMonitoringFeatureCosts } from './db/migrations/028_add_monitoring_feature_costs';
 import { createBookingsTable } from './db/migrations/029_create_bookings';
+import { addIntegrationBaseUrl } from './db/migrations/030_add_integration_base_url';
 import { addTestResultColumns } from './db/migrations/add-test-result-columns';
 import { createAlertSettingsTable } from './db/migrations/create-alert-settings';
 import { createTeamMembersTable } from './db/migrations/create-team-members';
@@ -79,6 +80,7 @@ const startServer = async () => {
     await createMonitoredAgents();
     await addMonitoringFeatureCosts();
     await createBookingsTable();
+    await addIntegrationBaseUrl();
     await addTestResultColumns();
     await createAlertSettingsTable();
     await createTeamMembersTable();

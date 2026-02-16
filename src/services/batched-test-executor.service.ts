@@ -130,7 +130,7 @@ export class BatchedTestExecutorService {
    */
   async executeBatch(
     batch: CallBatch,
-    agentConfig: { provider: string; agentId: string; apiKey: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; baseUrl?: string | null },
     agentPrompt: string
   ): Promise<BatchExecutionResult> {
     console.log(`[BatchedExecutor] Starting batch: ${batch.name}`);
@@ -194,7 +194,7 @@ export class BatchedTestExecutorService {
    */
   private async executeConversation(
     batch: CallBatch,
-    agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; phoneNumber?: string; baseUrl?: string | null },
     transcript: ConversationTurn[],
     audioChunks: Buffer[],
     userAudioChunks: Buffer[] = [] // Track user audio separately
@@ -406,13 +406,17 @@ export class BatchedTestExecutorService {
    */
   private async executeElevenLabsVoiceCall(
     batch: CallBatch,
-    agentConfig: { provider: string; agentId: string; apiKey: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; baseUrl?: string | null },
     transcript: ConversationTurn[],
     audioChunks: Buffer[]
   ): Promise<{ success: boolean; error?: string }> {
     return new Promise(async (resolve) => {
       const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
       const ttsService = new TTSService(effectiveApiKey);
+      
+      // Resolve base URL for ElevenLabs (supports custom domains like elevenlabs.in)
+      const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
+      const baseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
       
       // Build the multi-scenario test caller prompt
       const systemPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
@@ -437,7 +441,7 @@ export class BatchedTestExecutorService {
       try {
         // Get signed URL for WebSocket
         const signedUrlResponse = await fetch(
-          `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${agentConfig.agentId}`,
+          `${baseUrl}/convai/conversation/get_signed_url?agent_id=${agentConfig.agentId}`,
           {
             method: 'GET',
             headers: { 'xi-api-key': effectiveApiKey },

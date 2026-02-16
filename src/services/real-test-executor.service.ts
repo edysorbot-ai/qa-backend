@@ -46,6 +46,7 @@ export interface AgentConfig {
   agentId: string;
   apiKey: string;
   agentName?: string;
+  baseUrl?: string | null;
 }
 
 export interface TTSConfig {
@@ -384,7 +385,7 @@ export class RealTestExecutorService {
 
     switch (provider) {
       case 'elevenlabs':
-        return this.callElevenLabsAgent(agentId, apiKey, userInput, userAudioBuffer);
+        return this.callElevenLabsAgent(agentId, apiKey, userInput, userAudioBuffer, agentConfig.baseUrl);
       case 'retell':
         return this.callRetellAgent(agentId, apiKey, userInput, userAudioBuffer);
       case 'vapi':
@@ -401,7 +402,8 @@ export class RealTestExecutorService {
     agentId: string,
     apiKey: string,
     userInput: string,
-    userAudioBuffer: Buffer | null
+    userAudioBuffer: Buffer | null,
+    baseUrl?: string | null
   ): Promise<{
     callId?: string;
     agentGreeting?: string;
@@ -423,8 +425,10 @@ export class RealTestExecutorService {
 
       try {
         // Get signed URL for WebSocket connection
+        const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
+        const elBaseUrl = resolveElevenLabsBaseUrl(baseUrl);
         const response = await fetch(
-          `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${agentId}`,
+          `${elBaseUrl}/convai/conversation/get_signed_url?agent_id=${agentId}`,
           {
             method: 'GET',
             headers: { 'xi-api-key': effectiveApiKey },

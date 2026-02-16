@@ -102,22 +102,22 @@ export interface VoiceProviderClient {
   /**
    * Validate the API key and return account details
    */
-  validateApiKey(apiKey: string): Promise<ProviderValidationResult>;
+  validateApiKey(apiKey: string, baseUrl?: string | null): Promise<ProviderValidationResult>;
 
   /**
    * List available agents for the account
    */
-  listAgents(apiKey: string): Promise<VoiceAgent[]>;
+  listAgents(apiKey: string, baseUrl?: string | null): Promise<VoiceAgent[]>;
 
   /**
    * Get details of a specific agent
    */
-  getAgent(apiKey: string, agentId: string): Promise<VoiceAgent | null>;
+  getAgent(apiKey: string, agentId: string, baseUrl?: string | null): Promise<VoiceAgent | null>;
 
   /**
    * Get provider limits (concurrency, rate limits, etc.)
    */
-  getLimits?(apiKey: string): Promise<ProviderLimits>;
+  getLimits?(apiKey: string, baseUrl?: string | null): Promise<ProviderLimits>;
 
   /**
    * Generate TTS audio (if supported)

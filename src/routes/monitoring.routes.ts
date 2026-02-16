@@ -423,7 +423,7 @@ router.get('/calls/:callId/recording', async (req: AuthenticatedRequest, res: Re
 
     // Get call details including provider info and API key from integrations
     const result = await pool.query(
-      `SELECT pc.provider_call_id, pc.provider, pc.recording_url, i.api_key
+      `SELECT pc.provider_call_id, pc.provider, pc.recording_url, i.api_key, i.base_url
        FROM production_calls pc
        JOIN agents a ON pc.agent_id = a.id
        JOIN integrations i ON a.integration_id = i.id
@@ -435,14 +435,16 @@ router.get('/calls/:callId/recording', async (req: AuthenticatedRequest, res: Re
       return res.status(404).json({ error: 'Call not found' });
     }
 
-    const { provider_call_id, provider, api_key, recording_url } = result.rows[0];
+    const { provider_call_id, provider, api_key, recording_url, base_url } = result.rows[0];
     console.log(`[Recording] Fetching for call ${callId}, provider: ${provider}, provider_call_id: ${provider_call_id}`);
 
     if (provider === 'elevenlabs') {
       // Fetch audio from ElevenLabs Conversational AI API
+      const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
+      const elBaseUrl = resolveElevenLabsBaseUrl(base_url);
       console.log(`[Recording] Fetching ElevenLabs audio for conversation: ${provider_call_id}`);
       const audioResponse = await fetch(
-        `https://api.elevenlabs.io/v1/convai/conversations/${provider_call_id}/audio`,
+        `${elBaseUrl}/convai/conversations/${provider_call_id}/audio`,
         { headers: { 'xi-api-key': api_key } }
       );
 

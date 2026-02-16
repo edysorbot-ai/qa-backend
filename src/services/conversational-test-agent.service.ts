@@ -18,6 +18,7 @@
 
 import WebSocket from 'ws';
 import OpenAI from 'openai';
+import { resolveElevenLabsBaseUrl } from '../providers/elevenlabs.provider';
 
 // Use native fetch (Node 18+)
 declare const fetch: typeof globalThis.fetch;
@@ -35,6 +36,7 @@ interface AgentConfig {
   provider: 'elevenlabs' | 'retell' | 'vapi' | 'haptik';
   agentId: string;
   apiKey: string;
+  baseUrl?: string | null;
 }
 
 interface ConversationTurn {
@@ -147,8 +149,10 @@ export class ConversationalTestAgentService {
       
       console.log(`[ConversationalTestAgent] Starting simulation with prompt for: ${testCase.name}`);
       
+      const elBaseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
+      
       const response = await fetch(
-        `https://api.elevenlabs.io/v1/convai/agents/${agentConfig.agentId}/simulate-conversation`,
+        `${elBaseUrl}/convai/agents/${agentConfig.agentId}/simulate-conversation`,
         {
           method: 'POST',
           headers: {
@@ -463,9 +467,10 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
       try {
         // Get signed URL for WebSocket
         console.log(`[RealAudio] Getting signed URL for agent: ${agentConfig.agentId}`);
+        const elBaseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
         
         const signedUrlResponse = await fetch(
-          `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${agentConfig.agentId}`,
+          `${elBaseUrl}/convai/conversation/get_signed_url?agent_id=${agentConfig.agentId}`,
           {
             method: 'GET',
             headers: { 'xi-api-key': effectiveApiKey },
@@ -738,8 +743,7 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
           // Try to get recording from ElevenLabs API
           let recordingUrl: string | null = null;
           if (callId) {
-            const conversationData = await this.fetchElevenLabsConversation(callId, effectiveApiKey);
-            recordingUrl = conversationData?.recordingUrl || null;
+            const conversationData = await this.fetchElevenLabsConversation(callId, effectiveApiKey, agentConfig.baseUrl);
           }
           
           // If no recording from API, create one from captured conversation audio segments
@@ -932,9 +936,10 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
         // Get signed URL for WebSocket
         const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
         console.log(`[ConversationalTestAgent] Getting signed URL for agent: ${agentConfig.agentId}`);
+        const elBaseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
         
         const signedUrlResponse = await fetch(
-          `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${agentConfig.agentId}`,
+          `${elBaseUrl}/convai/conversation/get_signed_url?agent_id=${agentConfig.agentId}`,
           {
             method: 'GET',
             headers: { 'xi-api-key': effectiveApiKey },
@@ -1072,7 +1077,7 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
           console.log(`[ConversationalTestAgent] WebSocket closed, ${transcript.length} messages recorded`);
 
           // Fetch full conversation data from ElevenLabs API
-          const conversationData = await this.fetchElevenLabsConversation(callId, effectiveApiKey);
+          const conversationData = await this.fetchElevenLabsConversation(callId, effectiveApiKey, agentConfig.baseUrl);
           
           // Build transcripts
           const agentTranscript = transcript
@@ -1416,7 +1421,8 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
    */
   private async fetchElevenLabsConversation(
     conversationId: string,
-    apiKey: string
+    apiKey: string,
+    baseUrl?: string | null
   ): Promise<{
     transcript: ConversationTurn[];
     recordingUrl: string | null;
@@ -1428,9 +1434,10 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
     try {
       // Wait a bit for the conversation to be processed
       await this.sleep(2000);
+      const elBaseUrl = resolveElevenLabsBaseUrl(baseUrl);
 
       const response = await fetch(
-        `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`,
+        `${elBaseUrl}/convai/conversations/${conversationId}`,
         {
           headers: { 'xi-api-key': apiKey },
         }

@@ -12,7 +12,41 @@ import {
   TTSResponse,
 } from './provider.interface';
 
-const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io/v1';
+const ELEVENLABS_DEFAULT_BASE_URL = 'https://api.elevenlabs.io/v1';
+
+/**
+ * Resolve the ElevenLabs base URL from a custom domain or use the default.
+ * Accepts formats like:
+ *   - "elevenlabs.in" → "https://api.elevenlabs.in/v1"
+ *   - "api.elevenlabs.in" → "https://api.elevenlabs.in/v1"
+ *   - "https://api.elevenlabs.in/v1" → as-is
+ *   - null/undefined → default "https://api.elevenlabs.io/v1"
+ */
+export function resolveElevenLabsBaseUrl(baseUrl?: string | null): string {
+  if (!baseUrl || !baseUrl.trim()) {
+    return ELEVENLABS_DEFAULT_BASE_URL;
+  }
+  
+  let url = baseUrl.trim().replace(/\/+$/, ''); // Remove trailing slashes
+  
+  // If it's already a full URL with /v1, use as-is
+  if (url.startsWith('https://') && url.includes('/v1')) {
+    return url;
+  }
+  
+  // If it's a full URL without /v1, append it
+  if (url.startsWith('https://')) {
+    return `${url}/v1`;
+  }
+  
+  // If it starts with "api.", treat as full domain
+  if (url.startsWith('api.')) {
+    return `https://${url}/v1`;
+  }
+  
+  // Otherwise, it's a bare domain like "elevenlabs.in" → "https://api.elevenlabs.in/v1"
+  return `https://api.${url}/v1`;
+}
 
 // ElevenLabs plan concurrency limits
 const ELEVENLABS_PLAN_LIMITS: Record<string, number> = {
@@ -87,9 +121,11 @@ export class ElevenLabsProvider implements VoiceProviderClient {
   private async request<T>(
     apiKey: string,
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    baseUrl?: string | null
   ): Promise<T> {
-    const response = await fetch(`${ELEVENLABS_BASE_URL}${endpoint}`, {
+    const resolvedBaseUrl = resolveElevenLabsBaseUrl(baseUrl);
+    const response = await fetch(`${resolvedBaseUrl}${endpoint}`, {
       ...options,
       headers: {
         'xi-api-key': apiKey,
@@ -106,11 +142,11 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     return response.json() as T;
   }
 
-  async validateApiKey(apiKey: string): Promise<ProviderValidationResult> {
+  async validateApiKey(apiKey: string, baseUrl?: string | null): Promise<ProviderValidationResult> {
     try {
       console.log('Validating ElevenLabs API key...');
       // Get user info to validate the key
-      const user = await this.request<ElevenLabsUser>(apiKey, '/user');
+      const user = await this.request<ElevenLabsUser>(apiKey, '/user', {}, baseUrl);
       console.log('ElevenLabs validation success:', user.first_name);
 
       return {
@@ -134,12 +170,14 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     }
   }
 
-  async listAgents(apiKey: string): Promise<VoiceAgent[]> {
+  async listAgents(apiKey: string, baseUrl?: string | null): Promise<VoiceAgent[]> {
     try {
       // ElevenLabs Conversational AI agents endpoint
       const response = await this.request<{ agents: ElevenLabsAgent[] }>(
         apiKey,
-        '/convai/agents'
+        '/convai/agents',
+        {},
+        baseUrl
       );
 
       return response.agents.map((agent) => ({
@@ -159,11 +197,13 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     }
   }
 
-  async getAgent(apiKey: string, agentId: string): Promise<VoiceAgent | null> {
+  async getAgent(apiKey: string, agentId: string, baseUrl?: string | null): Promise<VoiceAgent | null> {
     try {
       const agent = await this.request<ElevenLabsAgent>(
         apiKey,
-        `/convai/agents/${agentId}`
+        `/convai/agents/${agentId}`,
+        {},
+        baseUrl
       );
 
       const config = agent.conversation_config;
@@ -214,7 +254,7 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     }
   }
 
-  async getKnowledgeBase(apiKey: string, agentId: string): Promise<any[]> {
+  async getKnowledgeBase(apiKey: string, agentId: string, baseUrl?: string | null): Promise<any[]> {
     try {
       // ElevenLabs knowledge base endpoint - list all documents
       console.log(`[ElevenLabs] Fetching knowledge base for agent: ${agentId}`);
@@ -222,7 +262,9 @@ export class ElevenLabsProvider implements VoiceProviderClient {
       // First, get the agent details to check for knowledge_base configuration
       const agentResponse = await this.request<any>(
         apiKey,
-        `/convai/agents/${agentId}`
+        `/convai/agents/${agentId}`,
+        {},
+        baseUrl
       );
       
       console.log('[ElevenLabs] Agent response keys:', Object.keys(agentResponse || {}));
@@ -254,7 +296,9 @@ export class ElevenLabsProvider implements VoiceProviderClient {
       // Now fetch all knowledge base documents to get metadata
       const kbResponse = await this.request<{ documents: any[]; has_more: boolean }>(
         apiKey,
-        `/convai/knowledge-base?page_size=100`
+        `/convai/knowledge-base?page_size=100`,
+        {},
+        baseUrl
       );
       
       console.log('[ElevenLabs] Knowledge base list response - total documents:', kbResponse.documents?.length || 0);
@@ -312,11 +356,13 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     }
   }
 
-  async listVoices(apiKey: string): Promise<ElevenLabsVoice[]> {
+  async listVoices(apiKey: string, baseUrl?: string | null): Promise<ElevenLabsVoice[]> {
     try {
       const response = await this.request<{ voices: ElevenLabsVoice[] }>(
         apiKey,
-        '/voices'
+        '/voices',
+        {},
+        baseUrl
       );
       return response.voices;
     } catch (error) {
@@ -325,12 +371,13 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     }
   }
 
-  async textToSpeech(apiKey: string, request: TTSRequest): Promise<TTSResponse> {
+  async textToSpeech(apiKey: string, request: TTSRequest, baseUrl?: string | null): Promise<TTSResponse> {
     const voiceId = request.voiceId || '21m00Tcm4TlvDq8ikWAM'; // Default: Rachel
     const modelId = request.modelId || 'eleven_monolingual_v1';
+    const resolvedBaseUrl = resolveElevenLabsBaseUrl(baseUrl);
 
     const response = await fetch(
-      `${ELEVENLABS_BASE_URL}/text-to-speech/${voiceId}`,
+      `${resolvedBaseUrl}/text-to-speech/${voiceId}`,
       {
         method: 'POST',
         headers: {
@@ -361,12 +408,13 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     };
   }
 
-  async getKnowledgeBaseDocumentContent(apiKey: string, documentId: string): Promise<string> {
+  async getKnowledgeBaseDocumentContent(apiKey: string, documentId: string, baseUrl?: string | null): Promise<string> {
     try {
       console.log(`[ElevenLabs] Fetching document content for: ${documentId}`);
+      const resolvedBaseUrl = resolveElevenLabsBaseUrl(baseUrl);
       
       const response = await fetch(
-        `${ELEVENLABS_BASE_URL}/convai/knowledge-base/${documentId}/content`,
+        `${resolvedBaseUrl}/convai/knowledge-base/${documentId}/content`,
         {
           headers: {
             'xi-api-key': apiKey,
@@ -391,9 +439,9 @@ export class ElevenLabsProvider implements VoiceProviderClient {
   /**
    * Get provider limits including concurrency
    */
-  async getLimits(apiKey: string): Promise<ProviderLimits> {
+  async getLimits(apiKey: string, baseUrl?: string | null): Promise<ProviderLimits> {
     try {
-      const user = await this.request<ElevenLabsUser>(apiKey, '/user');
+      const user = await this.request<ElevenLabsUser>(apiKey, '/user', {}, baseUrl);
       const tier = user.subscription.tier?.toLowerCase() || 'free';
       
       // Get concurrency limit from API if available, otherwise from plan
@@ -436,6 +484,7 @@ export class ElevenLabsProvider implements VoiceProviderClient {
     options: {
       sessionId?: string;
       previousChatId?: string;
+      baseUrl?: string | null;
     } = {}
   ): Promise<{
     id: string;
@@ -461,7 +510,7 @@ export class ElevenLabsProvider implements VoiceProviderClient {
       const response = await this.request<any>(apiKey, '/convai/conversation/text', {
         method: 'POST',
         body: JSON.stringify(requestBody),
-      });
+      }, options.baseUrl);
 
       console.log(`[ElevenLabs Chat] Response received:`, JSON.stringify(response, null, 2));
 
@@ -509,7 +558,8 @@ export class ElevenLabsProvider implements VoiceProviderClient {
   async runChatConversation(
     apiKey: string,
     agentId: string,
-    userMessages: string[]
+    userMessages: string[],
+    baseUrl?: string | null
   ): Promise<{
     success: boolean;
     transcript: Array<{ role: string; content: string; timestamp: number }>;
@@ -530,6 +580,7 @@ export class ElevenLabsProvider implements VoiceProviderClient {
         // Send to ElevenLabs Chat API
         const response = await this.chat(apiKey, agentId, userMessage, {
           sessionId: conversationId,
+          baseUrl,
         });
 
         if (!response) {

@@ -42,14 +42,18 @@ export interface CallResult {
  */
 export class ElevenLabsCaller extends EventEmitter {
   private apiKey: string;
+  private baseUrl: string;
   private ws: WebSocket | null = null;
   private conversationId: string | null = null;
   private turns: ConversationTurn[] = [];
   private startTime: number = 0;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl?: string | null) {
     super();
     this.apiKey = apiKey;
+    // Dynamic import to avoid circular dependency
+    const { resolveElevenLabsBaseUrl } = require('../providers/elevenlabs.provider');
+    this.baseUrl = resolveElevenLabsBaseUrl(baseUrl);
   }
 
   /**
@@ -58,7 +62,7 @@ export class ElevenLabsCaller extends EventEmitter {
   async startConversation(agentId: string): Promise<{ conversationId: string; ws: WebSocket }> {
     // Get signed URL for WebSocket connection
     const response = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${agentId}`,
+      `${this.baseUrl}/convai/conversation/get_signed_url?agent_id=${agentId}`,
       {
         method: 'GET',
         headers: {
@@ -356,11 +360,12 @@ export class VAPICaller extends EventEmitter {
  */
 export function createCaller(
   provider: 'elevenlabs' | 'retell' | 'vapi' | 'haptik',
-  apiKey: string
+  apiKey: string,
+  baseUrl?: string | null
 ): ElevenLabsCaller | RetellCaller | VAPICaller | HaptikCaller {
   switch (provider) {
     case 'elevenlabs':
-      return new ElevenLabsCaller(apiKey);
+      return new ElevenLabsCaller(apiKey, baseUrl);
     case 'retell':
       return new RetellCaller(apiKey);
     case 'vapi':
