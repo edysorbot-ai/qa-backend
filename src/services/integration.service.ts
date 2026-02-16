@@ -109,8 +109,12 @@ export class IntegrationService {
       return { integration: null, validation };
     }
 
-    // If valid, save to database
+    // If valid, save to database and mark as active
     const integration = await this.create(data);
+    if (integration) {
+      await this.update(integration.id, { is_active: true });
+      integration.is_active = true;
+    }
     return { integration, validation };
   }
 
