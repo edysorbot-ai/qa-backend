@@ -166,9 +166,30 @@ export class BatchedTestExecutorService {
     console.log(`[BatchedExecutor] After executeConversation: ${transcript.length} turns, provider: ${agentConfig.provider}, success: ${conversationResult.success}`);
     console.log(`[BatchedExecutor] Transcript preview:`, transcript.slice(0, 3).map(t => ({ role: t.role, content: t.content.substring(0, 50) })));
     
-    // If conversation failed and transcript is empty, log a warning
-    if (!conversationResult.success && transcript.length === 0) {
-      console.error(`[BatchedExecutor] WARNING: Conversation failed with empty transcript! Error: ${conversationResult.error}`);
+    // If conversation failed or transcript is empty, fail all test cases immediately
+    // Don't send empty transcript to GPT (it will hallucinate pass results)
+    if (transcript.length === 0) {
+      console.error(`[BatchedExecutor] CRITICAL: Transcript is EMPTY after conversation! Error: ${conversationResult.error || 'unknown'}`);
+      console.error(`[BatchedExecutor] Conversation success: ${conversationResult.success}, provider: ${agentConfig.provider}, testMode: ${batch.testMode}`);
+      
+      const durationMs = Date.now() - startTime;
+      const failedResults: BatchTestResult[] = batch.testCases.map(tc => ({
+        testCaseId: tc.id,
+        testCaseName: tc.name,
+        passed: false,
+        score: 0,
+        actualResponse: `Conversation failed - no transcript captured. ${conversationResult.error || 'The agent may not have responded or the connection failed.'}`,
+        metrics: { error: conversationResult.error || 'Empty transcript', conversationSuccess: conversationResult.success },
+        turnsCovered: [],
+      }));
+      
+      return {
+        results: failedResults,
+        transcript,
+        totalTurns: 0,
+        durationMs,
+        audioBuffer: undefined,
+      };
     }
     
     // Analyze the conversation against each test case
