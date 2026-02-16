@@ -7,6 +7,9 @@ import {
 
 const router = Router();
 
+// GET /api/test-cases/csv-template - Download CSV template for importing test cases
+router.get('/csv-template', testCaseController.csvTemplate.bind(testCaseController));
+
 // GET /api/test-cases - Get all test cases (optionally filtered by agent_id)
 router.get('/', testCaseController.getAll.bind(testCaseController));
 
@@ -17,6 +20,17 @@ router.get('/:id', testCaseController.getById.bind(testCaseController));
 router.post('/', 
   ...requireSubscriptionAndCredits(FeatureKeys.TEST_CASE_CREATE),
   testCaseController.create.bind(testCaseController)
+);
+
+// POST /api/test-cases/import-csv - Import test cases from CSV (requires subscription and credits)
+router.post('/import-csv',
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_CASE_CREATE, (req) => {
+    // We'll charge based on rows - estimate from csv_content line count minus header
+    const csvContent = req.body?.csv_content || '';
+    const lineCount = csvContent.split(/\r?\n/).filter((l: string) => l.trim()).length;
+    return Math.max(lineCount - 1, 1); // minus header row
+  }),
+  testCaseController.importCSV.bind(testCaseController)
 );
 
 // POST /api/test-cases/bulk - Create multiple test cases (requires subscription and credits per test case)
