@@ -163,8 +163,13 @@ export class BatchedTestExecutorService {
       audioChunks
     );
     
-    console.log(`[BatchedExecutor] After executeConversation: ${transcript.length} turns, provider: ${agentConfig.provider}`);
+    console.log(`[BatchedExecutor] After executeConversation: ${transcript.length} turns, provider: ${agentConfig.provider}, success: ${conversationResult.success}`);
     console.log(`[BatchedExecutor] Transcript preview:`, transcript.slice(0, 3).map(t => ({ role: t.role, content: t.content.substring(0, 50) })));
+    
+    // If conversation failed and transcript is empty, log a warning
+    if (!conversationResult.success && transcript.length === 0) {
+      console.error(`[BatchedExecutor] WARNING: Conversation failed with empty transcript! Error: ${conversationResult.error}`);
+    }
     
     // Analyze the conversation against each test case
     const results = await this.analyzeTranscriptForTestCases(
@@ -217,7 +222,7 @@ export class BatchedTestExecutorService {
    */
   private async executeChatBasedTest(
     batch: CallBatch,
-    agentConfig: { provider: string; agentId: string; apiKey: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; baseUrl?: string | null },
     transcript: ConversationTurn[]
   ): Promise<{ success: boolean; error?: string }> {
     console.log(`[BatchedExecutor] Starting chat-based test for batch: ${batch.name}`);
@@ -852,145 +857,154 @@ export class BatchedTestExecutorService {
   }
 
   /**
-   * Execute ElevenLabs test using Chat API
+   * Execute ElevenLabs test using Simulate Conversation API
    * Text-based testing for cost optimization
+   * Uses ElevenLabs' official simulate-conversation endpoint
+   * Falls back to WebSocket voice call if simulation fails
    */
   private async executeElevenLabsChatAPI(
     batch: CallBatch,
-    agentConfig: { provider: string; agentId: string; apiKey: string },
+    agentConfig: { provider: string; agentId: string; apiKey: string; baseUrl?: string | null },
     transcript: ConversationTurn[]
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      console.log(`[BatchedExecutor] Starting ElevenLabs Chat API test for batch: ${batch.name}`);
+      console.log(`[BatchedExecutor] Starting ElevenLabs Simulate Conversation for batch: ${batch.name}`);
       console.log(`[BatchedExecutor] Agent ID: ${agentConfig.agentId}`);
 
-      const { elevenlabsProvider } = await import('../providers/elevenlabs.provider');
+      const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
+      const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
+      const baseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
 
-      // Build test caller prompt
-      const testCallerPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
-      const testCallerHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-        { role: 'system', content: testCallerPrompt }
-      ];
+      // Build a simulated user prompt that covers ALL test cases in the batch
+      const simulatedUserPrompt = this.buildBatchSimulatedUserPrompt(batch.testCases);
+      const startTime = Date.now();
 
-      const testedCases = new Set<string>();
-      let conversationId: string | undefined;
-      let turnCount = 0;
-      const maxTurns = Math.min(batch.testCases.length * 3 + 5, 30);
-
-      // Initial greeting from test caller
-      const initialGreeting = await this.generateBatchTestCallerResponse(
-        testCallerHistory,
-        batch.testCases,
-        0
+      console.log(`[BatchedExecutor] Calling simulate-conversation API at ${baseUrl}/convai/agents/${agentConfig.agentId}/simulate-conversation`);
+      
+      const response = await fetch(
+        `${baseUrl}/convai/agents/${agentConfig.agentId}/simulate-conversation`,
+        {
+          method: 'POST',
+          headers: {
+            'xi-api-key': effectiveApiKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            simulation_specification: {
+              simulated_user_config: {
+                first_message: 'Hello',
+                prompt: {
+                  prompt: simulatedUserPrompt,
+                  llm: 'gpt-4o-mini',
+                  temperature: 0.7,
+                },
+              },
+            },
+            new_turns_limit: Math.min(batch.testCases.length * 4 + 4, 30),
+          }),
+        }
       );
 
-      if (initialGreeting.text) {
-        console.log(`[BatchedExecutor] ElevenLabs Chat: Test caller greeting: ${initialGreeting.text.substring(0, 50)}...`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[BatchedExecutor] ElevenLabs simulate-conversation API error (${response.status}): ${errorText}`);
         
-        // Send to ElevenLabs Chat API
-        const chatResponse = await elevenlabsProvider.chat(
-          agentConfig.apiKey,
-          agentConfig.agentId,
-          initialGreeting.text,
-          { sessionId: conversationId }
-        );
-
-        if (!chatResponse) {
-          return { success: false, error: 'Failed to get initial response from ElevenLabs Chat API' };
-        }
-
-        // Add user message to transcript
-        transcript.push({
-          role: 'test_caller',
-          content: initialGreeting.text,
-          timestamp: Date.now(),
-          testCaseId: initialGreeting.testCaseId,
-        });
-
-        // Track conversation for continuity
-        if (chatResponse.sessionId) {
-          conversationId = chatResponse.sessionId;
-        }
-
-        // Add assistant responses to transcript
-        for (const output of chatResponse.output) {
-          if (output.message) {
-            transcript.push({
-              role: 'ai_agent',
-              content: output.message,
-              timestamp: Date.now(),
-            });
-            testCallerHistory.push({ role: 'user', content: output.message });
-          }
-        }
-
-        if (initialGreeting.testCaseId) {
-          testedCases.add(initialGreeting.testCaseId);
-        }
-        testCallerHistory.push({ role: 'assistant', content: initialGreeting.text });
-        turnCount++;
+        // Fall back to voice WebSocket if simulation API fails
+        console.log(`[BatchedExecutor] Falling back to WebSocket voice call for ElevenLabs...`);
+        return this.executeElevenLabsVoiceCall(batch, agentConfig, transcript, []);
       }
 
-      // Continue conversation until all test cases covered
-      while (turnCount < maxTurns && testedCases.size < batch.testCases.length) {
-        const remainingCases = batch.testCases.filter(tc => !testedCases.has(tc.id));
-        const testCallerResponse = await this.generateBatchTestCallerResponse(
-          testCallerHistory,
-          remainingCases,
-          testedCases.size
-        );
+      const data = await response.json() as {
+        simulated_conversation: Array<{
+          role: 'agent' | 'user';
+          message: string | null;
+          tool_calls?: Array<{ tool_name: string }>;
+          time_in_call_secs?: number;
+        }>;
+        analysis?: {
+          call_successful?: string;
+          transcript_summary?: string;
+        };
+      };
 
-        if (!testCallerResponse.text || this.isGoodbyeMessage(testCallerResponse.text)) {
-          break;
-        }
+      console.log(`[BatchedExecutor] Simulate conversation completed with ${data.simulated_conversation?.length || 0} turns`);
 
-        const chatResponse = await elevenlabsProvider.chat(
-          agentConfig.apiKey,
-          agentConfig.agentId,
-          testCallerResponse.text,
-          { sessionId: conversationId }
-        );
-
-        if (!chatResponse) break;
-
-        transcript.push({
-          role: 'test_caller',
-          content: testCallerResponse.text,
-          timestamp: Date.now(),
-          testCaseId: testCallerResponse.testCaseId,
-        });
-
-        if (chatResponse.sessionId) {
-          conversationId = chatResponse.sessionId;
-        }
-
-        for (const output of chatResponse.output) {
-          if (output.message) {
+      // Convert simulated conversation to our transcript format
+      if (data.simulated_conversation && Array.isArray(data.simulated_conversation)) {
+        data.simulated_conversation
+          .filter(turn => turn.message)
+          .forEach((turn, index) => {
             transcript.push({
-              role: 'ai_agent',
-              content: output.message,
-              timestamp: Date.now(),
+              role: turn.role === 'agent' ? 'ai_agent' : 'test_caller',
+              content: turn.message || '',
+              timestamp: startTime + (index * 5000),
             });
-            testCallerHistory.push({ role: 'user', content: output.message });
-          }
-        }
-
-        if (testCallerResponse.testCaseId) {
-          testedCases.add(testCallerResponse.testCaseId);
-        }
-        testCallerHistory.push({ role: 'assistant', content: testCallerResponse.text });
-        turnCount++;
-
-        await new Promise(resolve => setTimeout(resolve, 300));
+          });
       }
 
-      console.log(`[BatchedExecutor] ElevenLabs Chat test completed: ${transcript.length} turns, ${testedCases.size}/${batch.testCases.length} scenarios tested`);
+      if (data.analysis) {
+        console.log(`[BatchedExecutor] ElevenLabs analysis: success=${data.analysis.call_successful}, summary=${data.analysis.transcript_summary?.substring(0, 100)}`);
+      }
+
+      // If transcript is still empty after simulation, fall back to voice
+      if (transcript.length === 0) {
+        console.log(`[BatchedExecutor] WARNING: Simulation returned empty transcript. Falling back to WebSocket voice call...`);
+        return this.executeElevenLabsVoiceCall(batch, agentConfig, transcript, []);
+      }
+
+      console.log(`[BatchedExecutor] ElevenLabs Simulate Conversation completed: ${transcript.length} turns`);
+      console.log(`[BatchedExecutor] Transcript preview:`, transcript.slice(0, 3).map(t => ({ role: t.role, content: t.content.substring(0, 80) })));
       return { success: true };
 
     } catch (error) {
-      console.error(`[BatchedExecutor] ElevenLabs Chat API error:`, error);
-      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+      console.error(`[BatchedExecutor] ElevenLabs Simulate Conversation error:`, error);
+      
+      // Fall back to voice WebSocket on any error
+      console.log(`[BatchedExecutor] Falling back to WebSocket voice call for ElevenLabs...`);
+      try {
+        return await this.executeElevenLabsVoiceCall(batch, agentConfig, transcript, []);
+      } catch (fallbackError) {
+        console.error(`[BatchedExecutor] Voice fallback also failed:`, fallbackError);
+        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+      }
     }
+  }
+
+  /**
+   * Build a simulated user prompt for ElevenLabs simulate-conversation API
+   * Covers all test cases in the batch within a single conversation
+   */
+  private buildBatchSimulatedUserPrompt(testCases: SmartTestCase[]): string {
+    const scenarioList = testCases.map((tc, i) => 
+      `${i + 1}. SCENARIO: "${tc.name}"
+   - What to test: ${tc.scenario}
+   - Your input/question: ${tc.userInput || tc.name}
+   - Expected agent behavior: ${tc.expectedOutcome}`
+    ).join('\n\n');
+
+    return `You are a TEST CALLER simulating a real customer for QA testing of a voice AI agent.
+You need to cover ALL of the following test scenarios in a natural conversation flow.
+
+YOUR ROLE:
+- Act as a REAL CUSTOMER calling for help
+- Cover each scenario naturally by asking relevant questions
+- React naturally to the agent's responses
+- If the agent asks questions, answer them based on the scenario context
+
+TEST SCENARIOS TO COVER (cover ALL of them in order):
+${scenarioList}
+
+CRITICAL INSTRUCTIONS:
+1. Start with a natural greeting, then work through EACH scenario
+2. Transition naturally between scenarios (e.g., "I also wanted to ask about...")
+3. Keep responses conversational (1-3 sentences typically)
+4. If the agent provides incorrect information, gently challenge it
+5. Make sure to explicitly ask about or test EACH scenario listed above
+6. After covering all scenarios, end the conversation politely with a goodbye
+7. Do NOT skip any scenario - each one must be tested
+
+REMEMBER: Your job is to test the agent across ALL ${testCases.length} scenarios. Cover them all.
+Respond with ONLY what you would say as the customer. No explanations or meta-commentary.`;
   }
 
   /**
