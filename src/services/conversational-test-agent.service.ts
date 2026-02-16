@@ -132,7 +132,8 @@ export class ConversationalTestAgentService {
     agentConfig: AgentConfig,
     startTime: number
   ): Promise<ConversationResult> {
-    const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
+    // User's integration API key takes priority over env var
+    const effectiveApiKey = agentConfig.apiKey || this.elevenLabsApiKey;
     
     // Check if we should use real audio mode for recordings
     if ((agentConfig as any).useRealAudio) {
@@ -314,7 +315,8 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
       let waitingForAgentGreeting = true;
       let agentResponseTimer: NodeJS.Timeout | null = null; // Timer to detect when agent stops responding
       
-      const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
+      // User's integration API key takes priority over env var
+      const effectiveApiKey = agentConfig.apiKey || this.elevenLabsApiKey;
       
       // Audio format expected by the agent (will be set by conversation_initiation_metadata)
       let expectedInputFormat = 'pcm_16000';
@@ -934,7 +936,8 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
 
       try {
         // Get signed URL for WebSocket
-        const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
+        // User's integration API key takes priority over env var
+        const effectiveApiKey = agentConfig.apiKey || this.elevenLabsApiKey;
         console.log(`[ConversationalTestAgent] Getting signed URL for agent: ${agentConfig.agentId}`);
         const elBaseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
         

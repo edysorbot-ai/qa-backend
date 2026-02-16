@@ -437,7 +437,8 @@ export class BatchedTestExecutorService {
     audioChunks: Buffer[]
   ): Promise<{ success: boolean; error?: string }> {
     return new Promise(async (resolve) => {
-      const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
+      // User's integration API key takes priority over env var
+      const effectiveApiKey = agentConfig.apiKey || this.elevenLabsApiKey;
       const ttsService = new TTSService(effectiveApiKey);
       
       // Resolve base URL for ElevenLabs (supports custom domains like elevenlabs.in)
@@ -892,7 +893,8 @@ export class BatchedTestExecutorService {
       console.log(`[BatchedExecutor] Starting ElevenLabs Simulate Conversation for batch: ${batch.name}`);
       console.log(`[BatchedExecutor] Agent ID: ${agentConfig.agentId}`);
 
-      const effectiveApiKey = this.elevenLabsApiKey || agentConfig.apiKey;
+      // User's integration API key takes priority over env var
+      const effectiveApiKey = agentConfig.apiKey || this.elevenLabsApiKey;
       const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
       const baseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
 
