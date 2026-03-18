@@ -90,9 +90,6 @@ export class SimulationExecutorService {
     const responseTimes: number[] = [];
 
     try {
-      // Generate user messages based on scenario
-      const userMessages = await this.generateUserMessages(testCase.scenario, config.maxTurns);
-      
       // Add agent's starting message if present
       if (agentConfig.startingMessage) {
         transcript.push({
@@ -102,20 +99,33 @@ export class SimulationExecutorService {
         });
       }
 
-      // Run the conversation
+      // Run a REACTIVE conversation that follows the agent's flow
+      // Instead of pre-generating all user messages, we generate each response
+      // based on what the agent says, simulating a real user who follows the flow
       const sessionId = `sim_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const maxTurns = config.maxTurns || 10;
+      let testObjectiveReached = false;
       
-      for (const userMessage of userMessages) {
+      // Generate the first user message (a natural greeting/opener)
+      let currentUserMessage = await this.generateFlowAwareResponse(
+        transcript,
+        testCase,
+        0,
+        maxTurns,
+        testObjectiveReached
+      );
+      
+      for (let turn = 0; turn < maxTurns; turn++) {
         // Add user message
         transcript.push({
           role: 'user',
-          content: userMessage,
+          content: currentUserMessage,
           timestamp: Date.now(),
         });
 
         // Get agent response
         const responseStart = Date.now();
-        const response = await customProvider.chat('custom', agentId, userMessage, {
+        const response = await customProvider.chat('custom', agentId, currentUserMessage, {
           sessionId,
           config: agentConfig,
         });
@@ -123,11 +133,41 @@ export class SimulationExecutorService {
         responseTimes.push(responseTime);
 
         if (response && response.output.length > 0) {
+          const agentMessage = response.output[0].message;
           transcript.push({
             role: 'assistant',
-            content: response.output[0].message,
+            content: agentMessage,
             timestamp: Date.now(),
           });
+          
+          // Check if we've reached the test objective
+          const agentText = agentMessage.toLowerCase();
+          const expectedText = testCase.expected_behavior.toLowerCase();
+          const expectedKeywords = expectedText.split(/\s+/).filter(w => w.length > 4);
+          const matchCount = expectedKeywords.filter(k => agentText.includes(k)).length;
+          if (matchCount >= expectedKeywords.length * 0.3) {
+            testObjectiveReached = true;
+          }
+          
+          // Check for natural conversation end
+          if (agentText.includes('goodbye') || agentText.includes('bye') || agentText.includes('take care')) {
+            // Agent is ending the conversation
+            transcript.push({
+              role: 'user',
+              content: 'Thank you! Goodbye!',
+              timestamp: Date.now(),
+            });
+            break;
+          }
+          
+          // Generate next user response reactively based on what the agent said
+          currentUserMessage = await this.generateFlowAwareResponse(
+            transcript,
+            testCase,
+            turn + 1,
+            maxTurns,
+            testObjectiveReached
+          );
         } else {
           throw new Error('No response from agent');
         }
@@ -238,7 +278,7 @@ export class SimulationExecutorService {
   }
 
   /**
-   * Generate user messages based on test scenario
+   * Generate user messages based on test scenario (legacy fallback)
    */
   private async generateUserMessages(scenario: string, maxTurns: number): Promise<string[]> {
     if (!this.openai) {
@@ -254,12 +294,19 @@ export class SimulationExecutorService {
             role: 'system',
             content: `You are a test user simulator. Generate realistic user messages for testing a voice agent.
 Based on the test scenario, create ${Math.min(maxTurns, 5)} user messages that would naturally occur in this conversation.
+
+IMPORTANT: The messages should follow a natural conversation flow:
+1. First message should be a GREETING and general statement of need (not the specific test question)
+2. Following messages should ANSWER the agent's likely qualifying questions (name, preferences, context)
+3. Only the later messages should get to the specific test scenario question
+4. This is because AI agents follow a conversation flow and won't answer specific questions until earlier steps are completed
+
 Return ONLY a JSON array of strings, no other text.
-Example: ["Hello, I need help with my order", "Yes, order number 12345", "Thank you"]`,
+Example: ["Hello, I need some help with something", "My name is Alex", "I'm interested in learning about your services", "Can you tell me about the pricing?", "Thank you, that's helpful"]`,
           },
           {
             role: 'user',
-            content: `Test scenario: ${scenario}\n\nGenerate the user messages:`,
+            content: `Test scenario: ${scenario}\n\nGenerate the user messages that follow a natural conversation flow:`,
           },
         ],
         temperature: 0.7,
@@ -276,6 +323,72 @@ Example: ["Hello, I need help with my order", "Yes, order number 12345", "Thank 
     } catch (error) {
       console.error('Error generating user messages:', error);
       return [scenario];
+    }
+  }
+
+  /**
+   * Generate a flow-aware user response based on the current conversation state
+   * This reacts to what the agent says instead of using pre-generated messages
+   */
+  private async generateFlowAwareResponse(
+    transcript: Array<{ role: string; content: string; timestamp: number }>,
+    testCase: SimulationTestCase,
+    turnIndex: number,
+    maxTurns: number,
+    testObjectiveReached: boolean
+  ): Promise<string> {
+    if (!this.openai) {
+      // Simple fallback
+      if (turnIndex === 0) return `Hello, I need help with something.`;
+      if (turnIndex === 1) return `I'm interested in ${testCase.scenario}`;
+      return testCase.scenario;
+    }
+
+    try {
+      const conversationSoFar = transcript
+        .map(t => `${t.role === 'assistant' ? 'Agent' : 'User'}: ${t.content}`)
+        .join('\n');
+
+      const phase = turnIndex < 2 ? 'EARLY' : (turnIndex < maxTurns - 2 ? 'MIDDLE' : 'LATE');
+      
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are simulating a real customer testing a voice agent. Generate the next user response.
+
+TEST SCENARIO: ${testCase.scenario}
+EXPECTED BEHAVIOR: ${testCase.expected_behavior}
+CONVERSATION PHASE: ${phase}
+TEST OBJECTIVE REACHED: ${testObjectiveReached ? 'YES' : 'NOT YET'}
+
+CRITICAL RULES:
+1. FOLLOW THE AGENT'S FLOW - if the agent asks you questions, ANSWER them cooperatively
+2. In EARLY phase: Focus on greeting and answering the agent's qualifying questions
+3. In MIDDLE phase: Continue cooperating with the agent's flow, start steering toward the test scenario
+4. In LATE phase: Make sure to bring up the test scenario directly if not already covered
+5. NEVER refuse to answer the agent's questions
+6. Give realistic, relevant answers to whatever the agent asks
+7. Keep responses conversational (1-3 sentences)
+
+Return ONLY the user's response, nothing else.`,
+          },
+          {
+            role: 'user',
+            content: conversationSoFar 
+              ? `Conversation so far:\n${conversationSoFar}\n\nGenerate the next user response:` 
+              : `The agent just greeted you. Respond naturally as a customer who needs help with: ${testCase.scenario}`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 150,
+      });
+
+      return response.choices[0]?.message?.content?.trim() || testCase.scenario;
+    } catch (error) {
+      console.error('Error generating flow-aware response:', error);
+      return testCase.scenario;
     }
   }
 
@@ -316,10 +429,16 @@ Example: ["Hello, I need help with my order", "Yes, order number 12345", "Thank 
           {
             role: 'system',
             content: `You are a QA evaluator for voice agents. Evaluate if the agent's responses meet the expected behavior.
+
+IMPORTANT - CONVERSATION FLOW AWARENESS:
+The test was conducted by following the agent's natural conversation flow. The test caller cooperated with the agent's qualifying questions and information-gathering process before navigating to the test scenario. This is the CORRECT approach because agents won't answer specific questions until their designed flow is followed.
+
 Consider:
-1. Did the agent address the user's needs?
+1. Did the agent EVENTUALLY address the user's needs at any point in the conversation?
 2. Was the response appropriate and professional?
 3. Did the agent follow its intended purpose?
+4. The test scenario may have been raised later in the conversation after flow-following — this is normal and correct
+5. Evaluate the agent's handling of the test scenario when it was eventually reached, not just the first response
 
 Return a JSON object with:
 {

@@ -797,6 +797,15 @@ export class RealTestExecutorService {
 
     const systemPrompt = `You are an expert QA evaluator for voice AI agents. Analyze the following conversation and evaluate the agent's performance against the test criteria.
 
+IMPORTANT CONTEXT - CONVERSATION FLOW AWARENESS:
+Voice AI agents are designed with specific conversation flows (e.g., greeting → qualifying questions → information gathering → providing answers → resolution). The test caller follows this flow naturally as a real customer would. This means:
+- The test case question/scenario may NOT appear in the very first user message
+- The test caller first cooperates with the agent's flow (answering qualifying questions, providing context)
+- The test caller then naturally navigates to the test scenario
+- You should evaluate whether the agent EVENTUALLY addressed the test case correctly during the conversation
+- DO NOT penalize the test for following the agent's designed flow — this is the CORRECT behavior
+- Focus on whether the agent ultimately handled the test scenario properly, regardless of how many turns it took to get there
+
 Return a JSON object with this exact structure:
 {
   "overallScore": <number 0-100>,
@@ -836,24 +845,26 @@ Return a JSON object with this exact structure:
 
 Evaluation criteria:
 - Score 70+ = passed
-- Check if agent meets the expected outcome
+- Check if agent meets the expected outcome AT ANY POINT during the conversation (not just the first response)
+- The conversation may include multiple turns of flow-following before reaching the test scenario — this is normal and correct
 - Look for hallucinations, incorrect information, tone issues
-- Evaluate if agent handled the scenario appropriately`;
+- Evaluate if agent handled the scenario appropriately when it was eventually reached
+- Give credit for proper conversation flow management`;
 
     const userPrompt = `Test Case: ${testCase.name}
 
 Scenario: ${testCase.scenario}
 
-User Input: ${testCase.userInput}
+User Input (test objective — may appear later in conversation after flow): ${testCase.userInput}
 
 Expected Outcome: ${testCase.expectedOutcome}
 
 Duration: ${durationMs}ms
 
-Conversation:
+Conversation (the test caller follows the agent's flow before reaching the test scenario):
 ${conversationText || 'No conversation recorded'}
 
-Evaluate this conversation and return the JSON evaluation.`;
+Evaluate this conversation. Remember: the test caller cooperates with the agent's flow first, then navigates to the test scenario. Evaluate whether the agent EVENTUALLY addressed the test case correctly.`;
 
     try {
       const response = await this.openai.chat.completions.create({

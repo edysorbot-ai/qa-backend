@@ -939,7 +939,7 @@ export class BatchedTestExecutorService {
                 },
               },
             },
-            new_turns_limit: Math.min(batch.testCases.length * 4 + 4, 30),
+            new_turns_limit: Math.min(batch.testCases.length * 4 + 8, 30), // Extra turns for agent flow cooperation
           }),
         }
       );
@@ -1028,21 +1028,38 @@ YOUR ROLE:
 - Act as a REAL CUSTOMER calling for help
 - Cover each scenario naturally by asking relevant questions
 - React naturally to the agent's responses
-- If the agent asks questions, answer them based on the scenario context
+- If the agent asks questions, ALWAYS answer them cooperatively
 
-TEST SCENARIOS TO COVER (cover ALL of them in order):
+=== CRITICAL: FOLLOW THE AGENT'S CONVERSATION FLOW FIRST ===
+AI agents follow a designed conversation flow (greeting → qualifying questions → collecting info → providing answers). You MUST follow this flow:
+
+1. Start with a natural greeting when the agent greets you
+2. The agent will ask qualifying questions (your name, what you need, preferences, etc.) - ANSWER ALL of them with realistic details
+3. Cooperate fully with the agent's information-gathering process
+4. ONLY AFTER the agent's initial qualifying flow is complete, start asking about your test scenarios
+5. If you skip the flow and jump to test questions directly, the agent will NOT answer them and tests will fail incorrectly
+
+Example flow:
+- Agent: "Hi, how can I help you today?" → You: "Hi, I'm looking for some help with [general topic related to scenarios]"
+- Agent: "Can I get your name?" → You: "Sure, it's Alex"
+- Agent: "What specifically are you looking for?" → You: Answer with context relevant to your test scenarios
+- Agent: provides some info → You: NOW start weaving in your test scenario questions
+
+TEST SCENARIOS TO COVER (cover ALL of them in order, AFTER following the agent's flow):
 ${scenarioList}
 
 CRITICAL INSTRUCTIONS:
-1. Start with a natural greeting, then work through EACH scenario
-2. Transition naturally between scenarios (e.g., "I also wanted to ask about...")
-3. Keep responses conversational (1-3 sentences typically)
-4. If the agent provides incorrect information, gently challenge it
-5. Make sure to explicitly ask about or test EACH scenario listed above
-6. After covering all scenarios, end the conversation politely with a goodbye
-7. Do NOT skip any scenario - each one must be tested
+1. Start with a natural greeting, then ANSWER the agent's qualifying questions first
+2. After the agent's flow allows it, work through EACH test scenario
+3. Transition naturally between scenarios (e.g., "I also wanted to ask about...")
+4. Keep responses conversational (1-3 sentences typically)
+5. If the agent asks questions, ALWAYS answer them - never skip or refuse
+6. If the agent provides incorrect information, gently challenge it
+7. Make sure to explicitly ask about or test EACH scenario listed above
+8. After covering all scenarios, end the conversation politely with a goodbye
+9. Do NOT skip any scenario - each one must be tested
 
-REMEMBER: Your job is to test the agent across ALL ${testCases.length} scenarios. Cover them all.
+REMEMBER: Your job is to test the agent across ALL ${testCases.length} scenarios. Follow the agent's flow first, then cover all scenarios.
 Respond with ONLY what you would say as the customer. No explanations or meta-commentary.`;
   }
 
@@ -2881,6 +2898,17 @@ You are testing: ${testCaseAnalysis.agentPurpose}
 Key topics to cover: ${testCaseAnalysis.keyTopics.join(', ')}
 Call ending scenarios: ${testCaseAnalysis.callEndingScenarios.join(', ') || 'None specified'}
 
+=== CRITICAL: FOLLOW THE AGENT'S CONVERSATION FLOW FIRST ===
+AI agents are designed with a specific conversation flow (e.g., greeting → qualifying questions → collecting info → providing answers). You MUST follow this flow as a real customer would:
+
+1. FIRST, respond to the agent's greeting naturally
+2. THEN, the agent will ask qualifying questions (your name, what you need help with, preferences, context, etc.) - ANSWER ALL of them cooperatively with realistic details from your persona
+3. COOPERATE with the agent's process - if it asks for information, provide it naturally
+4. ONLY AFTER you've gone through the agent's initial flow, start weaving in your test scenarios
+5. If you skip the agent's flow and jump straight to a test question, the agent will NOT answer it and the test will FAIL incorrectly
+
+WHY: Agents won't answer specific questions until they've completed their designed flow. Skipping steps causes false test failures.
+
 === CONVERSATION FLOW ===
 Expected flow: ${flowAnalysis}
 IMPORTANT: The test scenarios below are ALREADY OPTIMALLY ORDERED. Follow this order for natural conversation.
@@ -2890,16 +2918,25 @@ ${testScenarios}
 
 === INTELLIGENT TESTING RULES ===
 1. START: Say "Hello?" or a natural greeting when the call begins
-2. FOLLOW THE ORDER: Cover test scenarios in the order listed above
-3. BE NATURAL: Don't just read scenarios - weave them into natural conversation
-4. RESPOND APPROPRIATELY: When the agent asks questions, answer from your persona
-5. PIVOT NATURALLY: When moving to a new test scenario, transition smoothly
-6. TRACK PROGRESS: Mentally note which scenarios you've covered
-7. HANDLE FAILURES: If a scenario doesn't get the expected response, note it and move on
-8. SAVE ENDING FOR LAST: Any [CALL ENDING] scenario should be your FINAL action
+2. COOPERATE FIRST: Answer the agent's qualifying questions before moving to test scenarios
+3. FOLLOW THE ORDER: Cover test scenarios in the order listed above, but only after the agent's flow allows it
+4. BE NATURAL: Don't just read scenarios - weave them into natural conversation
+5. RESPOND APPROPRIATELY: When the agent asks questions, ALWAYS answer from your persona - never refuse or skip
+6. PIVOT NATURALLY: When moving to a new test scenario, transition smoothly
+7. TRACK PROGRESS: Mentally note which scenarios you've covered
+8. HANDLE FAILURES: If a scenario doesn't get the expected response, note it and move on
+9. SAVE ENDING FOR LAST: Any [CALL ENDING] scenario should be your FINAL action
+
+=== HOW TO NAVIGATE THE AGENT'S FLOW ===
+- When the agent greets you: Respond with a general need related to the test scenarios
+- When the agent asks your name: Give one from your persona
+- When the agent asks preferences/requirements: Answer with details relevant to the test scenarios
+- When the agent asks qualifying questions: Always cooperate - give realistic answers
+- When the agent provides options: React naturally, then steer toward your test scenarios
+- NEVER say "just answer my question" or try to skip the agent's process
 
 === HOW TO TRIGGER EACH SCENARIO ===
-- For information requests: Ask direct questions
+- For information requests: Ask direct questions (after the agent's flow allows it)
 - For objections: Express concerns naturally ("I'm worried about...")
 - For edge cases: Present the scenario when relevant
 - For call endings: Wait until you've covered other scenarios first
@@ -2916,6 +2953,7 @@ If the agent says something unexpected or the conversation goes off-track:
 - Keep responses SHORT (1-2 sentences)
 - Be curious, engaged, and slightly persistent
 - Don't skip scenarios - cover ALL ${testCases.length} test cases
+- ALWAYS answer the agent's questions first before asking yours
 - The scenarios are ordered for OPTIMAL conversation flow - trust the order`;
   }
 
@@ -3452,9 +3490,18 @@ Generate Alex's natural response:`;
     const systemPrompt = `You are a QA analyst evaluating a voice AI agent conversation. 
 Analyze the transcript and determine if each test case was successfully tested and passed.
 
+IMPORTANT - CONVERSATION FLOW AWARENESS:
+The test caller follows the agent's designed conversation flow (greeting → qualifying questions → information gathering → answers). This means:
+- Test scenarios may NOT appear at the start of the conversation
+- The test caller first cooperates with the agent's flow (answering the agent's questions, providing context)
+- Test scenarios are woven into the conversation naturally as the flow progresses
+- You should evaluate whether the agent addressed each test case AT ANY POINT during the conversation
+- DO NOT penalize for the conversation following a natural flow before reaching test scenarios
+- The order of test coverage may differ from the listed order — focus on whether each scenario was EVENTUALLY covered
+
 For each test case, evaluate:
-1. Was the scenario covered in the conversation?
-2. Did the agent respond appropriately?
+1. Was the scenario covered at any point in the conversation?
+2. Did the agent respond appropriately when the scenario was raised?
 3. Did the response meet the expected outcome?
 
 Return JSON:

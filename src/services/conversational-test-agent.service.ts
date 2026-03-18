@@ -163,7 +163,9 @@ export class ConversationalTestAgentService {
           body: JSON.stringify({
             simulation_specification: {
               simulated_user_config: {
-                first_message: testCase.userInput || 'Hello',
+                // Start with a natural greeting - NOT the test question directly
+                // The test question will be raised later following the agent's flow
+                first_message: 'Hello',
                 prompt: {
                   prompt: simulatedUserPrompt,
                   llm: 'gpt-4o-mini',
@@ -171,7 +173,7 @@ export class ConversationalTestAgentService {
                 },
               },
             },
-            new_turns_limit: 10, // Limit conversation to 10 turns
+            new_turns_limit: 14, // Allow enough turns for flow + test scenario
           }),
         }
       );
@@ -267,23 +269,32 @@ YOUR ROLE:
 TEST SCENARIO:
 ${testCase.scenario}
 
-YOUR GOAL/OBJECTIVE (this is what you should be testing):
+YOUR GOAL/OBJECTIVE (this is what you should eventually be testing):
 ${testCase.userInput}
 
 EXPECTED AGENT BEHAVIOR:
 ${testCase.expectedOutcome}
 
-CRITICAL INSTRUCTIONS:
-1. Your FIRST response after the agent's greeting should work towards the test objective: "${testCase.userInput}"
-2. Stay focused on the test scenario throughout the conversation
-3. Ask relevant questions a real customer would ask
-4. React naturally to the agent's responses
-5. If the agent asks questions, answer them based on the scenario
-6. Keep responses conversational (1-3 sentences typically)
-7. If the agent provides incorrect information, gently challenge it
-8. When the conversation reaches a natural conclusion, say goodbye politely
+=== CRITICAL: FOLLOW THE AGENT'S CONVERSATION FLOW ===
+Most AI agents are designed with a specific conversation flow (e.g., greeting → qualifying questions → information → resolution). You MUST follow this flow naturally as a real customer would.
 
-REMEMBER: You are testing whether the agent handles "${testCase.scenario}" correctly.
+1. FIRST, respond naturally to the agent's greeting (e.g., "Hi, I need some help" or "Hello, I have a question")
+2. THEN, cooperate with the agent's flow — if the agent asks qualifying questions (name, purpose, preferences, etc.), ANSWER them naturally with reasonable details
+3. PROVIDE context when asked — give realistic answers to the agent's questions (e.g., if asked about budget say "around $20,000", if asked about preferences give a reasonable answer)
+4. GRADUALLY steer the conversation toward your test objective: "${testCase.userInput}"
+5. DO NOT skip steps or refuse to answer the agent's questions — this will break the flow and cause the agent to not reach the point where it can address your test scenario
+6. Be patient — it may take several turns before the agent reaches the point where your test scenario is relevant
+
+CONVERSATION APPROACH:
+- Start general: respond to the greeting, state a general need related to the scenario
+- Middle: answer the agent's qualifying questions cooperatively with realistic details
+- Then naturally: bring up your specific test question/scenario when the conversation flow reaches the right point
+- React naturally to the agent's responses throughout
+- If the agent provides incorrect information, gently challenge it
+- Keep responses conversational (1-3 sentences typically)
+- When the conversation reaches a natural conclusion, say goodbye politely
+
+REMEMBER: You are testing whether the agent handles "${testCase.scenario}" correctly. But you must FOLLOW THE AGENT'S FLOW to get there — don't jump straight to the test question.
 
 Respond with ONLY what you would say as the customer. No explanations or meta-commentary.`;
   }
@@ -1136,19 +1147,38 @@ YOUR ROLE:
 TEST SCENARIO:
 ${testCase.scenario}
 
-YOUR GOAL/OBJECTIVE (this is what you should be testing):
+YOUR GOAL/OBJECTIVE (this is what you should eventually be testing):
 ${testCase.userInput}
 
 EXPECTED AGENT BEHAVIOR:
 ${testCase.expectedOutcome}
 
+=== CRITICAL: FOLLOW THE AGENT'S CONVERSATION FLOW ===
+Most AI agents are designed with a specific conversation flow (e.g., greeting → qualifying questions → collecting info → providing answers → resolution). You MUST follow this flow naturally as a real customer would. DO NOT jump straight to your test question.
+
+CONVERSATION FLOW STRATEGY:
+1. PHASE 1 - GREETING: Respond naturally to the agent's greeting. Say something general like "Hi, I need some help" or "Hello, I have a question about [general topic]"
+2. PHASE 2 - COOPERATE WITH AGENT'S FLOW: The agent will likely ask qualifying questions (name, what you need, preferences, context, etc.). ANSWER ALL of them naturally with realistic details:
+   - If asked your name, give one (e.g., "Alex" or "Sarah")
+   - If asked about preferences, give reasonable answers related to the scenario
+   - If asked about budget, timeline, requirements — provide realistic details
+   - If asked to provide context — give details relevant to the test scenario
+3. PHASE 3 - NAVIGATE TO TEST OBJECTIVE: Once you've cooperated with the agent's qualifying flow, NATURALLY steer toward your test objective: "${testCase.userInput}"
+4. PHASE 4 - TEST THE SCENARIO: Now ask your specific test question or present the test scenario
+5. PHASE 5 - EVALUATE: Listen to the agent's response and react naturally
+
+WHY THIS MATTERS:
+- Agents are programmed to follow a flow and WON'T answer specific questions until they've completed earlier steps
+- If you skip steps, the agent will try to go back to earlier steps, and your test will fail incorrectly
+- Following the flow is how REAL customers interact, so this is the correct way to test
+
 CRITICAL INSTRUCTIONS:
-1. Your FIRST response after the agent's greeting should work towards the test objective: "${testCase.userInput}"
-2. Stay focused on the test scenario throughout the conversation
+1. DO NOT skip the agent's flow — answer its questions first
+2. Stay focused on eventually reaching the test scenario
 3. Ask relevant questions a real customer would ask
 4. React naturally to the agent's responses
-5. If the agent asks questions, answer them based on the scenario
-6. Keep responses conversational (1-3 sentences typically)
+5. If the agent asks questions, ALWAYS answer them with realistic details
+6. Keep responses conversational (2-4 sentences)
 7. If the agent provides incorrect information, gently challenge it
 8. KEEP THE CONVERSATION GOING - always have follow-up questions
 
@@ -1163,6 +1193,8 @@ FOLLOW-UP QUESTIONS TO USE (when the agent asks if you have more questions):
 - "What support do you provide after I apply?"
 
 IMPORTANT - NEVER DO THESE:
+- NEVER refuse to answer the agent's qualifying questions
+- NEVER say "just answer my question" or try to skip the agent's flow
 - NEVER say "I don't have any other questions"
 - NEVER say "That's all I needed" or "That's all for now"
 - NEVER say "I think I understand now" or "I think that covers everything"
@@ -1184,7 +1216,7 @@ RESPONSE LENGTH:
 - Don't give one-word or very short answers
 - Ask follow-up questions to keep the conversation going
 
-REMEMBER: You are testing whether the agent handles "${testCase.scenario}" correctly.
+REMEMBER: You are testing whether the agent handles "${testCase.scenario}" correctly. But you MUST follow the agent's conversation flow first to get to that point — this is how real customers interact.
 
 Respond with ONLY what you would say as the customer. No explanations or meta-commentary.`;
   }

@@ -217,6 +217,9 @@ export class DirectTestExecutorService {
 
   /**
    * Execute a single test with real voice agent
+   * Uses flow-aware multi-turn conversation approach
+   * The test caller follows the agent's conversation flow naturally
+   * before navigating to the test scenario
    */
   private async executeRealTest(
     testCase: TestCase,
@@ -226,53 +229,48 @@ export class DirectTestExecutorService {
     const metrics: DirectTestResult['metrics'] = {};
 
     try {
-      console.log(`[DirectExecutor] Executing test: ${testCase.scenario}`);
+      console.log(`[DirectExecutor] Executing flow-aware test: ${testCase.scenario}`);
 
-      // Step 1: Generate TTS audio from user input
-      let userAudioBuffer: Buffer | null = null;
-      if (this.ttsService) {
-        const ttsStart = Date.now();
-        const ttsRequest: TTSRequest = {
-          text: testCase.userInput,
-          voiceId: config.ttsConfig?.voice,
-          modelId: config.ttsConfig?.model,
-        };
-        const ttsResponse = await this.ttsService.generateSpeech(ttsRequest);
-        userAudioBuffer = ttsResponse.audioBuffer;
-        metrics.ttsGenerationMs = Date.now() - ttsStart;
-        console.log(`[DirectExecutor] TTS generated in ${metrics.ttsGenerationMs}ms`);
-      }
-
-      // Step 2: Call the voice agent
-      const voiceCallStart = Date.now();
-      const callResult = await this.callAgent(
-        config.agentConfig,
-        userAudioBuffer || Buffer.from(testCase.userInput) // Fallback to text if no TTS
+      // Use ConversationalTestAgent for multi-turn flow-aware testing
+      // This ensures the test follows the agent's conversation flow
+      const { conversationalTestAgent } = await import('./conversational-test-agent.service');
+      
+      const conversationResult = await conversationalTestAgent.executeConversationalTest(
+        {
+          id: testCase.id,
+          name: testCase.scenario,
+          scenario: testCase.scenario,
+          userInput: testCase.userInput,
+          expectedOutcome: testCase.expectedResponse,
+          category: testCase.category,
+        },
+        {
+          provider: config.agentConfig.provider,
+          agentId: config.agentConfig.agentId,
+          apiKey: config.agentConfig.apiKey,
+        }
       );
-      metrics.voiceCallMs = Date.now() - voiceCallStart;
-      metrics.firstResponseLatencyMs = callResult.firstResponseTime 
-        ? callResult.firstResponseTime - voiceCallStart 
+
+      const voiceCallMs = Date.now() - startTime;
+      metrics.voiceCallMs = voiceCallMs;
+      metrics.firstResponseLatencyMs = conversationResult.transcript.length > 0 
+        ? (conversationResult.transcript[0].timestamp - startTime) 
         : undefined;
-      console.log(`[DirectExecutor] Voice call completed in ${metrics.voiceCallMs}ms`);
 
-      // Step 3: Transcribe agent response (if we got audio back)
-      let agentTranscript = callResult.transcript || '';
-      if (callResult.audioBuffer && callResult.audioBuffer.length > 0 && this.asrService) {
-        const asrStart = Date.now();
-        const transcription = await this.asrService.transcribe({
-          audioBuffer: callResult.audioBuffer,
-        });
-        agentTranscript = transcription.transcript || agentTranscript;
-        metrics.asrTranscriptionMs = Date.now() - asrStart;
-        console.log(`[DirectExecutor] ASR transcription in ${metrics.asrTranscriptionMs}ms`);
-      }
+      // Build the agent's full transcript from the conversation
+      const agentTranscript = conversationResult.agentTranscript || 
+        conversationResult.transcript
+          .filter(t => t.role === 'ai_agent')
+          .map(t => t.content)
+          .join('\n');
 
-      // Step 4: Analyze the response
+      // Analyze the full conversation (not just a single response)
       const analysisStart = Date.now();
-      const analysis = this.analyzeResponse(
+      const analysis = this.analyzeConversationResponse(
         testCase.expectedResponse,
         agentTranscript,
-        testCase.category
+        testCase.category,
+        conversationResult.transcript
       );
       metrics.analysisMs = Date.now() - analysisStart;
 
@@ -317,6 +315,22 @@ export class DirectTestExecutorService {
         error: errorMessage,
       };
     }
+  }
+
+  /**
+   * Analyze the full conversation response (multi-turn aware)
+   * Looks at the entire conversation transcript to evaluate
+   * whether the agent eventually addressed the test case correctly
+   */
+  private analyzeConversationResponse(
+    expected: string,
+    agentTranscript: string,
+    category: string,
+    conversationTurns: Array<{ role: string; content: string }>
+  ): DirectTestResult['analysis'] {
+    // Analyze against the full agent transcript (all turns combined)
+    // This ensures we catch the answer even if it came later in the flow
+    return this.analyzeResponse(expected, agentTranscript, category);
   }
 
   /**
