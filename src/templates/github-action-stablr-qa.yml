@@ -1,0 +1,107 @@
+# Stablr Voice Agent QA - GitHub Actions Integration
+# 
+# This workflow triggers automated regression tests on your voice agent
+# whenever the system prompt file changes.
+#
+# Setup:
+# 1. Go to Stablr dashboard → Settings → CI/CD Integration
+# 2. Generate a CI/CD API key for your agent
+# 3. Add STABLR_CI_KEY as a repository secret in GitHub
+# 4. Copy this file to .github/workflows/stablr-qa.yml
+# 5. Update PROMPT_FILE path to your agent's prompt file
+
+name: Stablr Voice Agent QA
+
+on:
+  pull_request:
+    paths:
+      - 'prompts/**'  # Update this to match your prompt file path
+      - 'src/prompts/**'
+  push:
+    branches: [main]
+    paths:
+      - 'prompts/**'
+      - 'src/prompts/**'
+
+env:
+  STABLR_API_URL: https://api.stablr.ai  # Your Stablr API URL
+  PROMPT_FILE: prompts/agent-system-prompt.txt  # Path to your prompt file
+
+jobs:
+  voice-agent-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Prompt File
+        id: prompt
+        run: |
+          PROMPT_CONTENT=$(cat "${{ env.PROMPT_FILE }}" | jq -Rs .)
+          echo "content=$PROMPT_CONTENT" >> $GITHUB_OUTPUT
+
+      - name: Trigger Stablr Regression Tests
+        id: trigger
+        run: |
+          RESPONSE=$(curl -s -X POST "${{ env.STABLR_API_URL }}/api/ci/trigger" \
+            -H "Authorization: Bearer ${{ secrets.STABLR_CI_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "commitSha": "${{ github.sha }}",
+              "branch": "${{ github.head_ref || github.ref_name }}",
+              "prNumber": "${{ github.event.pull_request.number }}",
+              "threshold": 80,
+              "promptContent": ${{ steps.prompt.outputs.content }}
+            }')
+          
+          echo "Response: $RESPONSE"
+          TEST_RUN_ID=$(echo $RESPONSE | jq -r '.testRunId')
+          echo "test_run_id=$TEST_RUN_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for Test Results
+        id: results
+        run: |
+          TEST_RUN_ID="${{ steps.trigger.outputs.test_run_id }}"
+          MAX_WAIT=300  # 5 minutes
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            RESULT=$(curl -s "${{ env.STABLR_API_URL }}/api/ci/status/$TEST_RUN_ID")
+            STATUS=$(echo $RESULT | jq -r '.status')
+            
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+              echo "result=$RESULT" >> $GITHUB_OUTPUT
+              echo "$RESULT" | jq .
+              break
+            fi
+            
+            echo "Status: $STATUS - waiting..."
+            sleep 10
+            ELAPSED=$((ELAPSED + 10))
+          done
+
+      - name: Check Pass Rate
+        run: |
+          RESULT='${{ steps.results.outputs.result }}'
+          PASS_RATE=$(echo $RESULT | jq -r '.passRate')
+          THRESHOLD=$(echo $RESULT | jq -r '.threshold')
+          DEPLOY_ALLOWED=$(echo $RESULT | jq -r '.deployAllowed')
+          PASSED=$(echo $RESULT | jq -r '.counts.passed')
+          FAILED=$(echo $RESULT | jq -r '.counts.failed')
+          
+          echo "## 🎯 Stablr QA Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Pass Rate | ${PASS_RATE}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| Threshold | ${THRESHOLD}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | ${PASSED} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | ${FAILED} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$DEPLOY_ALLOWED" = "false" ]; then
+            echo "❌ **BLOCKED**: Pass rate ${PASS_RATE}% is below threshold ${THRESHOLD}%" >> $GITHUB_STEP_SUMMARY
+            echo "::error::Voice agent QA failed! Pass rate ${PASS_RATE}% is below threshold ${THRESHOLD}%"
+            exit 1
+          else
+            echo "✅ **PASSED**: All quality checks passed" >> $GITHUB_STEP_SUMMARY
+          fi

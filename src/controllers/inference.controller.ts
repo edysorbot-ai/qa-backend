@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 import { Request, Response, NextFunction } from 'express';
 import { pool } from '../db';
 import { getInferenceScannerService } from '../services/inference-scanner.service';
@@ -34,7 +35,7 @@ export async function scanTestResult(req: Request, res: Response, next: NextFunc
 
     res.json(scanResult);
   } catch (error) {
-    console.error('Error scanning test result for inferences', error);
+    logger.error(`Error scanning test result for inferences`, { error });
     next(error);
   }
 }
@@ -73,7 +74,7 @@ export async function getInferenceScan(req: Request, res: Response, next: NextFu
 
     res.json(scanResult);
   } catch (error) {
-    console.error('Error getting inference scan', error);
+    logger.error(`Error getting inference scan`, { error });
     next(error);
   }
 }
@@ -104,7 +105,7 @@ export async function getAgentInferenceScans(req: Request, res: Response, next: 
 
     res.json({ scans });
   } catch (error) {
-    console.error('Error getting agent inference scans', error);
+    logger.error(`Error getting agent inference scans`, { error });
     next(error);
   }
 }
@@ -135,7 +136,7 @@ export async function getComplianceSummary(req: Request, res: Response, next: Ne
 
     res.json(summary);
   } catch (error) {
-    console.error('Error getting compliance summary', error);
+    logger.error(`Error getting compliance summary`, { error });
     next(error);
   }
 }
@@ -172,7 +173,7 @@ export async function acknowledgeInference(req: Request, res: Response, next: Ne
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Error acknowledging inference', error);
+    logger.error(`Error acknowledging inference`, { error });
     next(error);
   }
 }

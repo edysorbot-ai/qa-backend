@@ -517,6 +517,23 @@ export class EmailNotificationService {
       </html>
     `;
   }
+
+  async sendScheduledTestPausedNotification(
+    email: string,
+    scheduledTestId: string,
+    errorMsg: string,
+    failures: number
+  ): Promise<boolean> {
+    const subject = `[Stablr] Scheduled test paused after ${failures} failures`;
+    const html = `
+      <h2>Scheduled Test Paused</h2>
+      <p>Your scheduled test has been automatically paused after ${failures} consecutive failures.</p>
+      <p><strong>Test ID:</strong> ${scheduledTestId}</p>
+      <p><strong>Last error:</strong> ${errorMsg}</p>
+      <p>Please check your configuration and resume the test from your dashboard.</p>
+    `;
+    return this.sendEmailInternal(email, subject, html);
+  }
 }
 
 export const emailNotificationService = new EmailNotificationService();

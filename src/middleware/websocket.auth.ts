@@ -2,12 +2,13 @@
  * WebSocket Authentication
  * 
  * Provides authentication for WebSocket connections
- * using Clerk tokens for user authentication
+ * using Clerk tokens for user authentication with proper signature verification
  */
 
 import { WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import { logger } from '../services/logger.service';
+import crypto from 'crypto';
 
 // Types for authenticated WebSocket connections
 export interface AuthenticatedWebSocket extends WebSocket {
@@ -61,43 +62,113 @@ const extractToken = (request: IncomingMessage): string | null => {
 };
 
 /**
- * Verify Clerk session token
- * In production, this should validate against Clerk's JWKS
+ * Verify Clerk session token with proper cryptographic signature validation.
+ * Uses Clerk's JWKS endpoint to fetch public keys and verify RS256 signatures.
  */
+
+// Cache for JWKS keys (refreshed every 1 hour)
+let jwksCache: { keys: any[]; fetchedAt: number } | null = null;
+const JWKS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+async function fetchJWKS(): Promise<any[]> {
+  if (jwksCache && Date.now() - jwksCache.fetchedAt < JWKS_CACHE_TTL) {
+    return jwksCache.keys;
+  }
+
+  // Clerk JWKS endpoint derived from the publishable key
+  const CLERK_PUBLISHABLE_KEY = process.env.CLERK_PUBLISHABLE_KEY || '';
+  // Extract the instance identifier from pk_test_xxx or pk_live_xxx
+  const instanceId = Buffer.from(CLERK_PUBLISHABLE_KEY.replace(/^pk_(test|live)_/, ''), 'base64').toString().replace(/\$$/, '');
+  const jwksUrl = `https://${instanceId}/.well-known/jwks.json`;
+
+  try {
+    const response = await fetch(jwksUrl);
+    if (!response.ok) {
+      throw new Error(`JWKS fetch failed: ${response.status}`);
+    }
+    const data = await response.json();
+    jwksCache = { keys: data.keys, fetchedAt: Date.now() };
+    return data.keys;
+  } catch (error) {
+    logger.security.error('Failed to fetch JWKS', { error: error instanceof Error ? error.message : 'Unknown' });
+    // Return cached keys if available even if expired
+    if (jwksCache) return jwksCache.keys;
+    return [];
+  }
+}
+
+function importRSAKey(jwk: any): crypto.KeyObject {
+  // Convert JWK to PEM for verification
+  const keyObject = crypto.createPublicKey({ key: jwk, format: 'jwk' });
+  return keyObject;
+}
+
 const verifyClerkToken = async (token: string): Promise<WebSocketAuthResult> => {
   try {
-    // For Clerk tokens, we need to verify the JWT
-    // Clerk provides session tokens that contain the user ID
-    
     const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
     if (!CLERK_SECRET_KEY) {
       logger.security.error('CLERK_SECRET_KEY not configured');
       return { authenticated: false, error: 'Server configuration error' };
     }
-    
-    // Decode the token to extract claims
-    // Note: In production, use Clerk's SDK to verify tokens properly
+
     const parts = token.split('.');
     if (parts.length !== 3) {
       return { authenticated: false, error: 'Invalid token format' };
     }
-    
-    try {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-      
-      // Check expiration
-      if (payload.exp && payload.exp * 1000 < Date.now()) {
-        return { authenticated: false, error: 'Token expired' };
+
+    // Decode header to get key ID (kid)
+    const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString());
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+
+    // Verify expiration first (fast check)
+    if (payload.exp && payload.exp * 1000 < Date.now()) {
+      return { authenticated: false, error: 'Token expired' };
+    }
+
+    // Fetch JWKS and find matching key
+    const keys = await fetchJWKS();
+    const matchingKey = keys.find((k: any) => k.kid === header.kid);
+
+    if (!matchingKey) {
+      // Try refreshing cache in case keys were rotated
+      jwksCache = null;
+      const freshKeys = await fetchJWKS();
+      const freshKey = freshKeys.find((k: any) => k.kid === header.kid);
+      if (!freshKey) {
+        return { authenticated: false, error: 'No matching signing key found' };
       }
-      
-      // Extract user ID from Clerk token
-      // Clerk tokens use 'sub' for user ID
-      const userId = payload.sub || payload.userId;
-      if (!userId) {
-        return { authenticated: false, error: 'No user ID in token' };
+      // Verify signature with fresh key
+      const publicKey = importRSAKey(freshKey);
+      const signatureValid = crypto.verify(
+        'RSA-SHA256',
+        Buffer.from(`${parts[0]}.${parts[1]}`),
+        publicKey,
+        Buffer.from(parts[2], 'base64url')
+      );
+      if (!signatureValid) {
+        return { authenticated: false, error: 'Invalid token signature' };
       }
-      
-      return { authenticated: true, userId };
+    } else {
+      // Verify signature with cached key
+      const publicKey = importRSAKey(matchingKey);
+      const signatureValid = crypto.verify(
+        'RSA-SHA256',
+        Buffer.from(`${parts[0]}.${parts[1]}`),
+        publicKey,
+        Buffer.from(parts[2], 'base64url')
+      );
+      if (!signatureValid) {
+        return { authenticated: false, error: 'Invalid token signature' };
+      }
+    }
+
+    // Extract user ID from verified payload
+    const userId = payload.sub || payload.userId;
+    if (!userId) {
+      return { authenticated: false, error: 'No user ID in token' };
+    }
+
+    return { authenticated: true, userId };
     } catch (decodeError) {
       return { authenticated: false, error: 'Failed to decode token' };
     }

@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 import { Request, Response } from 'express';
 import { query } from '../db';
 import { userService } from '../services/user.service';
@@ -155,7 +156,7 @@ export class ObservabilityController {
 
       res.json(metrics);
     } catch (error) {
-      console.error('Error fetching observability metrics:', error);
+      logger.error(`Error fetching observability metrics:`, { error });
       res.status(500).json({ error: 'Failed to fetch metrics' });
     }
   }
@@ -218,7 +219,7 @@ export class ObservabilityController {
 
       res.json({ trends });
     } catch (error) {
-      console.error('Error fetching trends:', error);
+      logger.error(`Error fetching trends:`, { error });
       res.status(500).json({ error: 'Failed to fetch trends' });
     }
   }
@@ -276,7 +277,7 @@ export class ObservabilityController {
 
       res.json({ alerts });
     } catch (error) {
-      console.error('Error fetching alerts:', error);
+      logger.error(`Error fetching alerts:`, { error });
       res.status(500).json({ error: 'Failed to fetch alerts' });
     }
   }
@@ -333,7 +334,7 @@ export class ObservabilityController {
 
       res.json({ performance });
     } catch (error) {
-      console.error('Error fetching agent performance:', error);
+      logger.error(`Error fetching agent performance:`, { error });
       res.status(500).json({ error: 'Failed to fetch agent performance' });
     }
   }
@@ -442,7 +443,7 @@ export class ObservabilityController {
 
       res.json({ breakdown });
     } catch (error) {
-      console.error('Error fetching issue breakdown:', error);
+      logger.error(`Error fetching issue breakdown:`, { error });
       res.status(500).json({ error: 'Failed to fetch issue breakdown' });
     }
   }

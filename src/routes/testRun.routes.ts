@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { testRunController } from '../controllers/testRun.controller';
+import { requireSubscriptionAndCredits, FeatureKeys } from '../middleware/credits.middleware';
 
 const router = Router();
 
@@ -30,14 +31,29 @@ router.get('/agents/:agentId/tool-analytics', testRunController.getAgentToolAnal
 // GET /api/test-runs/:id - Get test run by ID with results
 router.get('/:id', testRunController.getById.bind(testRunController));
 
-// POST /api/test-runs - Create new test run
-router.post('/', testRunController.create.bind(testRunController));
+// POST /api/test-runs - Create new test run (requires subscription)
+router.post('/', 
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_RUN_EXECUTE, (req) => {
+    return req.body?.test_case_ids?.length || 1;
+  }),
+  testRunController.create.bind(testRunController)
+);
 
-// POST /api/test-runs/start-workflow - Start a workflow-based test run
-router.post('/start-workflow', testRunController.startWorkflow.bind(testRunController));
+// POST /api/test-runs/start-workflow - Start a workflow-based test run (requires credits)
+router.post('/start-workflow', 
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_RUN_EXECUTE, (req) => {
+    return req.body?.testCaseIds?.length || 1;
+  }),
+  testRunController.startWorkflow.bind(testRunController)
+);
 
-// POST /api/test-runs/:id/start - Start test run execution
-router.post('/:id/start', testRunController.start.bind(testRunController));
+// POST /api/test-runs/:id/start - Start test run execution (requires credits)
+router.post('/:id/start', 
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_RUN_EXECUTE, (req) => {
+    return req.body?.testCaseCount || 1;
+  }),
+  testRunController.start.bind(testRunController)
+);
 
 // POST /api/test-runs/:id/cancel - Cancel test run
 router.post('/:id/cancel', testRunController.cancel.bind(testRunController));

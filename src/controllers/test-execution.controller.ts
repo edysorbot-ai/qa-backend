@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 /**
  * Test Execution Controller
  * API endpoints for starting, monitoring, and managing test runs
@@ -33,6 +34,7 @@ if (!fs.existsSync(recordingsDir)) {
 const router = Router();
 
 /**
+ * @deprecated Use /start-batched instead. Kept for backward compat.
  * Start a new test run
  * POST /api/test-execution/start
  */
@@ -131,7 +133,7 @@ router.post('/start',
       );
     }
 
-    console.log(`[Controller] Created ${formattedTestCases.length} pending test results`);
+    logger.info(`[Controller] Created ${formattedTestCases.length} pending test results`);
 
     // Deduct credits for the test run
     await deductCreditsAfterSuccess(
@@ -163,21 +165,21 @@ router.post('/start',
     };
 
     realTestExecutor.executeTestRun(testRunConfig).then(() => {
-      console.log(`[Controller] Test run ${testRunId} execution completed`);
+      logger.info(`[Controller] Test run ${testRunId} execution completed`);
     }).catch((error: Error) => {
-      console.error('Test run failed:', error);
+      logger.error(`Test run failed:`, { error });
       // Update test run status to failed
       pool.query(
         `UPDATE test_runs SET status = 'failed' WHERE id = $1`,
         [testRunId]
-      ).catch(console.error);
+      ).catch((err: any) => logger.error('Background task failed', { error: err }));
     });
 
-    console.log(`[Controller] REAL test execution started for ${testRunId}`);
-    console.log(`[Controller] Provider: ${provider}, Agent: ${agentId}`);
+    logger.info(`[Controller] REAL test execution started for ${testRunId}`);
+    logger.info(`[Controller] Provider: ${provider}, Agent: ${agentId}`);
 
   } catch (error) {
-    console.error('Failed to start test run:', error);
+    logger.error(`Failed to start test run:`, { error });
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({
       success: false,
@@ -321,7 +323,7 @@ router.post('/check-credits', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Failed to check credits:', error);
+    logger.error(`Failed to check credits:`, { error });
     res.status(500).json({
       success: false,
       error: 'Failed to check credit status',
@@ -394,7 +396,7 @@ router.get('/status/:testRunId', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Failed to get test run status:', error);
+    logger.error(`Failed to get test run status:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to get status',
@@ -552,6 +554,8 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
           outputMatch: r.output_match,
           // AI-generated prompt suggestions for failed tests
           promptSuggestions: promptSuggestions || [],
+          // Turn coverage from evaluation
+          turnsCovered: parsedMetrics?.turnsCovered || [],
           // Timestamps
           startedAt: r.started_at,
           completedAt: r.completed_at,
@@ -570,7 +574,7 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Failed to get test results:', error);
+    logger.error(`Failed to get test results:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to get results',
@@ -771,7 +775,7 @@ router.get('/result/:testResultId', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Failed to get test result:', error);
+    logger.error(`Failed to get test result:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to get result',
@@ -780,6 +784,7 @@ router.get('/result/:testResultId', async (req: Request, res: Response) => {
 });
 
 /**
+ * @deprecated Use POST /api/test-runs/:id/cancel instead.
  * Cancel a test run
  * POST /api/test-execution/cancel/:testRunId
  * Note: Since we use direct execution, cancellation only updates status
@@ -824,7 +829,7 @@ router.post('/cancel/:testRunId', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Failed to cancel test run:', error);
+    logger.error(`Failed to cancel test run:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to cancel test run',
@@ -833,6 +838,7 @@ router.post('/cancel/:testRunId', async (req: Request, res: Response) => {
 });
 
 /**
+ * @deprecated Not consumed by frontend.
  * Get execution metrics (no queue, return basic stats)
  * GET /api/test-execution/metrics
  */
@@ -867,7 +873,7 @@ router.get('/metrics', async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error('Failed to get metrics:', error);
+    logger.error(`Failed to get metrics:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to get metrics',
@@ -942,7 +948,7 @@ router.get('/runs', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Failed to list test runs:', error);
+    logger.error(`Failed to list test runs:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to list runs',
@@ -951,6 +957,7 @@ router.get('/runs', async (req: Request, res: Response) => {
 });
 
 /**
+ * @deprecated Not consumed by frontend.
  * Re-run a test run (for stuck or failed test runs)
  * POST /api/test-execution/rerun/:testRunId
  */
@@ -1050,15 +1057,15 @@ router.post('/rerun/:testRunId', async (req: Request, res: Response) => {
     };
 
     realTestExecutor.executeTestRun(testRunConfig).catch((error: Error) => {
-      console.error('Re-run failed:', error);
+      logger.error(`Re-run failed:`, { error });
       pool.query(
         `UPDATE test_runs SET status = 'failed' WHERE id = $1`,
         [testRunId]
-      ).catch(console.error);
+      ).catch((err: any) => logger.error('Background task failed', { error: err }));
     });
 
   } catch (error) {
-    console.error('Failed to re-run test:', error);
+    logger.error(`Failed to re-run test:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to re-run',
@@ -1091,7 +1098,7 @@ router.post('/generate-smart-testcases', async (req: Request, res: Response) => 
       });
     }
 
-    console.log(`[SmartTestCases] Generating for agent: ${agentName}`);
+    logger.info(`[SmartTestCases] Generating for agent: ${agentName}`);
 
     const result = await smartTestCaseGeneratorService.generateSmartTestCases(
       agentName || 'Voice Agent',
@@ -1111,7 +1118,7 @@ router.post('/generate-smart-testcases', async (req: Request, res: Response) => 
     });
 
   } catch (error) {
-    console.error('Failed to generate smart test cases:', error);
+    logger.error(`Failed to generate smart test cases:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to generate test cases',
@@ -1135,7 +1142,7 @@ router.post('/generate-smart-test-cases', async (req: Request, res: Response) =>
     }
 
     const agentPrompt = `${prompt || ''}\n\nFirst Message: ${firstMessage || ''}`;
-    console.log(`[SmartTestCases] Generating for agent: ${agentId}`);
+    logger.info(`[SmartTestCases] Generating for agent: ${agentId}`);
 
     const result = await smartTestCaseGeneratorService.generateSmartTestCases(
       agentId || 'Voice Agent',
@@ -1165,7 +1172,7 @@ router.post('/generate-smart-test-cases', async (req: Request, res: Response) =>
     });
 
   } catch (error) {
-    console.error('Failed to generate smart test cases:', error);
+    logger.error(`Failed to generate smart test cases:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to generate test cases',
@@ -1197,7 +1204,7 @@ router.post('/create-test-plan', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Failed to create test plan:', error);
+    logger.error(`Failed to create test plan:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to create test plan',
@@ -1231,7 +1238,7 @@ router.post('/modify-test-plan', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Failed to modify test plan:', error);
+    logger.error(`Failed to modify test plan:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to modify test plan',
@@ -1260,7 +1267,7 @@ router.post('/analyze-for-batching', async (req: Request, res: Response) => {
       });
     }
 
-    console.log(`[IntelligentBatching] Analyzing ${testCases.length} test cases with AI...`);
+    logger.info(`[IntelligentBatching] Analyzing ${testCases.length} test cases with AI...`);
 
     // Import the intelligent batching service
     const { intelligentBatchingService } = await import('../services/intelligent-batching.service');
@@ -1290,7 +1297,7 @@ router.post('/analyze-for-batching', async (req: Request, res: Response) => {
         }
       );
 
-      console.log(`[IntelligentBatching] Created ${result.batches.length} AI-optimized batches`);
+      logger.info(`[IntelligentBatching] Created ${result.batches.length} AI-optimized batches`);
 
       res.json({
         success: true,
@@ -1319,7 +1326,7 @@ router.post('/analyze-for-batching', async (req: Request, res: Response) => {
 
     } else {
       // Fallback to simple batching if no prompt provided
-      console.log(`[Batching] No agent prompt provided, using simple topic-based batching`);
+      logger.info(`[Batching] No agent prompt provided, using simple topic-based batching`);
       
       // Group test cases by topic
       const topicGroups = new Map<string, any[]>();
@@ -1361,7 +1368,7 @@ router.post('/analyze-for-batching', async (req: Request, res: Response) => {
     }
 
   } catch (error) {
-    console.error('Failed to analyze batching:', error);
+    logger.error(`Failed to analyze batching:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to analyze batching',
@@ -1542,14 +1549,14 @@ router.post('/start-batched',
       }
     }
 
-    console.log(`[BatchedExecution] Created test run with ${batches.length} batches, ${totalTestCases} test cases`);
-    console.log(`[BatchedExecution] Batch details:`);
+    logger.info(`[BatchedExecution] Created test run with ${batches.length} batches, ${totalTestCases} test cases`);
+    logger.info(`[BatchedExecution] Batch details:`);
     batches.forEach((batch: Batch, index: number) => {
-      console.log(`[BatchedExecution]   Batch ${index + 1}: "${batch.name}" - ${batch.testCases.length} test cases`);
-      console.log(`[BatchedExecution]     Test cases: ${batch.testCases.map(tc => tc.name).join(', ')}`);
+      logger.info(`[BatchedExecution]   Batch ${index + 1}: "${batch.name}" - ${batch.testCases.length} test cases`);
+      logger.info(`[BatchedExecution]     Test cases: ${batch.testCases.map(tc => tc.name).join(', ')}`);
     });
-    console.log(`[BatchedExecution] Batching enabled: ${enableBatching}`);
-    console.log(`[BatchedExecution] Concurrency enabled: ${enableConcurrency}, count: ${concurrencyCount}`);
+    logger.info(`[BatchedExecution] Batching enabled: ${enableBatching}`);
+    logger.info(`[BatchedExecution] Concurrency enabled: ${enableConcurrency}, count: ${concurrencyCount}`);
 
     // Deduct credits after successful test run creation
     await deductCreditsAfterSuccess(
@@ -1583,7 +1590,7 @@ router.post('/start-batched',
           phoneNumber = config.phoneNumber || config.phone_number || config.phone;
         }
       } catch (e) {
-        console.log('[BatchedExecution] Could not fetch agent phone number:', e);
+        logger.info(`[BatchedExecution] Could not fetch agent phone number:`, { detail: e });
       }
     }
 
@@ -1595,15 +1602,15 @@ router.post('/start-batched',
       enableConcurrency,
       concurrencyCount
     ).catch((error: Error) => {
-      console.error('Batched test run failed:', error);
+      logger.error(`Batched test run failed:`, { error });
       pool.query(
         `UPDATE test_runs SET status = 'failed' WHERE id = $1`,
         [testRunId]
-      ).catch(console.error);
+      ).catch((err: any) => logger.error('Background task failed', { error: err }));
     });
 
   } catch (error) {
-    console.error('Failed to start batched test run:', error);
+    logger.error(`Failed to start batched test run:`, { error });
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to start batched test run',
@@ -1625,15 +1632,15 @@ async function executeBatchedCalls(
   enableConcurrency: boolean = false,
   concurrencyCount: number = 1
 ): Promise<void> {
-  console.log(`[BatchedExecution] Starting execution for ${testRunId}`);
-  console.log(`[BatchedExecution] Total batches: ${batches.length}`);
-  console.log(`[BatchedExecution] Concurrency: ${enableConcurrency ? `enabled (${concurrencyCount})` : 'disabled (sequential)'}`);
+  logger.info(`[BatchedExecution] Starting execution for ${testRunId}`);
+  logger.info(`[BatchedExecution] Total batches: ${batches.length}`);
+  logger.info(`[BatchedExecution] Concurrency: ${enableConcurrency ? `enabled (${concurrencyCount})` : 'disabled (sequential)'}`);
   
   const { batchedTestExecutor } = await import('../services/batched-test-executor.service');
   
   // Helper function to execute a single batch
   const executeSingleBatch = async (batch: typeof batches[0], batchIndex: number) => {
-    console.log(`[BatchedExecution] Executing batch ${batchIndex + 1}/${batches.length}: ${batch.name} (${batch.testCases.length} test cases)`);
+    logger.info(`[BatchedExecution] Executing batch ${batchIndex + 1}/${batches.length}: ${batch.name} (${batch.testCases.length} test cases)`);
     
     try {
       // Update test cases to 'running' status
@@ -1648,7 +1655,7 @@ async function executeBatchedCalls(
       // Execute the batch (single call/chat with multiple test cases)
       // Route to voice or chat based on testMode
       const testMode = batch.testMode || 'voice';
-      console.log(`[BatchedExecution] Batch ${batch.id} testMode: ${testMode}`);
+      logger.info(`[BatchedExecution] Batch ${batch.id} testMode: ${testMode}`);
       
       const executionResult = await batchedTestExecutor.executeBatch(
         {
@@ -1683,13 +1690,13 @@ async function executeBatchedCalls(
       
       const { results, transcript, totalTurns, durationMs, audioBuffer } = executionResult;
       
-      console.log(`[BatchedExecution] Batch ${batch.id} execution result:`);
-      console.log(`[BatchedExecution]   - Results count: ${results.length}`);
-      console.log(`[BatchedExecution]   - Transcript length: ${transcript.length}`);
-      console.log(`[BatchedExecution]   - Total turns: ${totalTurns}`);
-      console.log(`[BatchedExecution]   - Duration: ${durationMs}ms`);
+      logger.info(`[BatchedExecution] Batch ${batch.id} execution result:`);
+      logger.info(`[BatchedExecution]   - Results count: ${results.length}`);
+      logger.info(`[BatchedExecution]   - Transcript length: ${transcript.length}`);
+      logger.info(`[BatchedExecution]   - Total turns: ${totalTurns}`);
+      logger.info(`[BatchedExecution]   - Duration: ${durationMs}ms`);
       if (transcript.length > 0) {
-        console.log(`[BatchedExecution]   - First turn: ${JSON.stringify(transcript[0])}`);
+        logger.info(`[BatchedExecution]   - First turn: ${JSON.stringify(transcript[0])}`);
       }
       
       // Save audio recording if available
@@ -1699,7 +1706,7 @@ async function executeBatchedCalls(
         const audioFilePath = path.join(recordingsDir, audioFileName);
         fs.writeFileSync(audioFilePath, audioBuffer);
         audioUrl = `/api/audio/${audioFileName}`;
-        console.log(`[BatchedExecution] Saved audio: ${audioFilePath} (${audioBuffer.length} bytes)`);
+        logger.info(`[BatchedExecution] Saved audio: ${audioFilePath} (${audioBuffer.length} bytes)`);
       }
       
       // Convert transcript to conversation_turns format
@@ -1720,7 +1727,7 @@ async function executeBatchedCalls(
         .join('\n');
       
       // Store results for each test case with transcript data
-      console.log(`[BatchedExecution] Saving batch ${batch.id} with ${results.length} results for ${batch.testCases.length} test cases`);
+      logger.info(`[BatchedExecution] Saving batch ${batch.id} with ${results.length} results for ${batch.testCases.length} test cases`);
       
       // Create a map from result names to results for quick lookup
       const resultMap = new Map(results.map(r => [r.testCaseName, r]));
@@ -1759,10 +1766,10 @@ async function executeBatchedCalls(
         );
       }
       
-      console.log(`[BatchedExecution] Batch ${batch.id} completed: ${results.filter(r => r.passed).length}/${results.length} passed, ${totalTurns} turns, ${durationMs}ms`);
+      logger.info(`[BatchedExecution] Batch ${batch.id} completed: ${results.filter(r => r.passed).length}/${results.length} passed, ${totalTurns} turns, ${durationMs}ms`);
       
     } catch (error) {
-      console.error(`[BatchedExecution] Batch ${batch.id} failed:`, error);
+      logger.error(`[BatchedExecution] Batch ${batch.id} failed:`, error);
       
       // Mark all test cases in batch as failed
       for (const tc of batch.testCases) {
@@ -1779,16 +1786,16 @@ async function executeBatchedCalls(
   // Execute batches - either concurrently or sequentially
   if (enableConcurrency && concurrencyCount > 1) {
     // Execute in parallel with limited concurrency
-    console.log(`[BatchedExecution] Running ${batches.length} batches with concurrency ${concurrencyCount}`);
+    logger.info(`[BatchedExecution] Running ${batches.length} batches with concurrency ${concurrencyCount}`);
     
     // Process batches in chunks
     for (let i = 0; i < batches.length; i += concurrencyCount) {
       const chunk = batches.slice(i, i + concurrencyCount);
       const chunkPromises = chunk.map((batch, idx) => executeSingleBatch(batch, i + idx));
       
-      console.log(`[BatchedExecution] Starting concurrent round ${Math.floor(i / concurrencyCount) + 1}: ${chunk.length} batches`);
+      logger.info(`[BatchedExecution] Starting concurrent round ${Math.floor(i / concurrencyCount) + 1}: ${chunk.length} batches`);
       await Promise.all(chunkPromises);
-      console.log(`[BatchedExecution] Completed concurrent round ${Math.floor(i / concurrencyCount) + 1}`);
+      logger.info(`[BatchedExecution] Completed concurrent round ${Math.floor(i / concurrencyCount) + 1}`);
     }
   } else {
     // Execute sequentially
@@ -1813,16 +1820,16 @@ async function executeBatchedCalls(
     [new Date(), parseInt(passedCount.rows[0].count), parseInt(failedCount.rows[0].count), testRunId]
   );
   
-  console.log(`[BatchedExecution] Completed all batches for ${testRunId} - Passed: ${passedCount.rows[0].count}, Failed: ${failedCount.rows[0].count}`);
+  logger.info(`[BatchedExecution] Completed all batches for ${testRunId} - Passed: ${passedCount.rows[0].count}, Failed: ${failedCount.rows[0].count}`);
 
   // Send email notifications for failed tests
   emailNotificationService.checkAndNotifyTestRunFailures(testRunId)
     .then(sent => {
       if (sent) {
-        console.log(`[BatchedExecution] Failure notification sent for test run ${testRunId}`);
+        logger.info(`[BatchedExecution] Failure notification sent for test run ${testRunId}`);
       }
     })
-    .catch(err => console.error('[BatchedExecution] Failed to send notification:', err));
+    .catch(err => logger.error(`[BatchedExecution] Failed to send notification:`, { detail: err }));
 }
 
 /**
@@ -1921,15 +1928,32 @@ async function executeBatchedTestRun(
   agentConfig: { provider: string; agentId: string; apiKey: string },
   agentPrompt: string
 ): Promise<void> {
-  console.log(`[BatchedExecutor] Starting batched execution for ${testRunId}`);
-  console.log(`[BatchedExecutor] Total batches: ${testPlan.batches.length}`);
+  logger.info(`[BatchedExecutor] Starting batched execution for ${testRunId}`);
+  logger.info(`[BatchedExecutor] Total batches: ${testPlan.batches.length}`);
   
   // Import the batched executor service (to be created)
   const { batchedTestExecutor } = await import('../services/batched-test-executor.service');
   
+  // Load false positive patterns for this agent to tune evaluation
+  let falsePositivePatterns: Array<{ test_case_scenario: string; actual_response: string; reason: string }> = [];
+  try {
+    const agentIdQuery = await pool.query(
+      `SELECT agent_id FROM test_runs WHERE id = $1`, [testRunId]
+    );
+    if (agentIdQuery.rows[0]?.agent_id) {
+      const fpQuery = await pool.query(
+        `SELECT test_case_scenario, actual_response, reason FROM false_positive_patterns WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 20`,
+        [agentIdQuery.rows[0].agent_id]
+      );
+      falsePositivePatterns = fpQuery.rows;
+    }
+  } catch (e) {
+    // Table might not exist yet - ignore
+  }
+  
   for (let i = 0; i < testPlan.batches.length; i++) {
     const batch = testPlan.batches[i];
-    console.log(`[BatchedExecutor] Executing batch ${i + 1}/${testPlan.batches.length}: ${batch.name}`);
+    logger.info(`[BatchedExecutor] Executing batch ${i + 1}/${testPlan.batches.length}: ${batch.name}`);
     
     try {
       // Update test cases to 'running' status
@@ -1944,7 +1968,8 @@ async function executeBatchedTestRun(
       const executionResult = await batchedTestExecutor.executeBatch(
         batch,
         agentConfig,
-        agentPrompt
+        agentPrompt,
+        falsePositivePatterns
       );
       
       // Store results for each test case
@@ -1958,7 +1983,7 @@ async function executeBatchedTestRun(
             result.passed ? 'passed' : 'failed',
             result.actualResponse,
             result.score,
-            JSON.stringify(result.metrics || {}),
+            JSON.stringify({ ...(result.metrics || {}), turnsCovered: result.turnsCovered || [], promptSuggestions: result.promptSuggestions || [] }),
             new Date(),
             testRunId,
             result.testCaseId,
@@ -1967,7 +1992,7 @@ async function executeBatchedTestRun(
       }
       
     } catch (error) {
-      console.error(`[BatchedExecutor] Batch ${batch.id} failed:`, error);
+      logger.error(`[BatchedExecutor] Batch ${batch.id} failed:`, error);
       
       // Mark all test cases in batch as failed
       for (const tc of batch.testCases) {
@@ -1996,16 +2021,16 @@ async function executeBatchedTestRun(
     [new Date(), parseInt(passedCount.rows[0].count), parseInt(failedCount.rows[0].count), testRunId]
   );
   
-  console.log(`[BatchedExecutor] Completed batched execution for ${testRunId} - Passed: ${passedCount.rows[0].count}, Failed: ${failedCount.rows[0].count}`);
+  logger.info(`[BatchedExecutor] Completed batched execution for ${testRunId} - Passed: ${passedCount.rows[0].count}, Failed: ${failedCount.rows[0].count}`);
 
   // Send email notifications for failed tests
   emailNotificationService.checkAndNotifyTestRunFailures(testRunId)
     .then(sent => {
       if (sent) {
-        console.log(`[BatchedExecutor] Failure notification sent for test run ${testRunId}`);
+        logger.info(`[BatchedExecutor] Failure notification sent for test run ${testRunId}`);
       }
     })
-    .catch(err => console.error('[BatchedExecutor] Failed to send notification:', err));
+    .catch(err => logger.error(`[BatchedExecutor] Failed to send notification:`, { detail: err }));
 }
 
 /**
@@ -2036,8 +2061,154 @@ router.get('/audio/:filename', (req: Request, res: Response) => {
     
     res.send(wavBuffer);
   } catch (error) {
-    console.error('Error serving audio:', error);
+    logger.error(`Error serving audio:`, { error });
     res.status(500).json({ error: 'Failed to serve audio file' });
+  }
+});
+
+/**
+ * Mark a test result as false positive (tunes the testing agent)
+ */
+router.post('/mark-false-positive', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { resultId, reason } = req.body;
+
+    if (!resultId) {
+      return res.status(400).json({ success: false, error: 'resultId is required' });
+    }
+
+    // Get the test result details
+    const resultQuery = await pool.query(
+      `SELECT tr.*, tc.agent_id, tc.scenario as tc_scenario
+       FROM test_results tr
+       LEFT JOIN test_cases tc ON tr.test_case_id = tc.id
+       WHERE tr.id = $1`,
+      [resultId]
+    );
+
+    if (resultQuery.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Test result not found' });
+    }
+
+    const result = resultQuery.rows[0];
+
+    // Mark as false positive
+    await pool.query(
+      `UPDATE test_results SET is_false_positive = true, false_positive_reason = $1 WHERE id = $2`,
+      [reason || 'Marked by user', resultId]
+    );
+
+    // Store the pattern for future test agent tuning
+    if (result.agent_id) {
+      await pool.query(
+        `INSERT INTO false_positive_patterns (agent_id, user_id, test_case_scenario, actual_response, reason, pattern_context)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          result.agent_id,
+          userId,
+          result.tc_scenario || result.scenario || '',
+          result.actual_response || '',
+          reason || 'Marked by user',
+          JSON.stringify({
+            userInput: result.user_input,
+            expectedResponse: result.expected_response,
+            category: result.category,
+          }),
+        ]
+      );
+    }
+
+    res.json({ success: true, message: 'Marked as false positive' });
+  } catch (error: any) {
+    logger.error(`[FalsePositive] Error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Get false positive patterns for an agent (for test caller context)
+ */
+router.get('/false-positive-patterns/:agentId', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { agentId } = req.params;
+
+    const patterns = await pool.query(
+      `SELECT * FROM false_positive_patterns WHERE agent_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 50`,
+      [agentId, userId]
+    );
+
+    res.json({ success: true, patterns: patterns.rows });
+  } catch (error: any) {
+    logger.error(`[FalsePositivePatterns] Error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Save batches for an agent (persist for reuse)
+ */
+router.post('/save-batches', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { agentId, name, batches, testCaseIds } = req.body;
+
+    if (!agentId || !batches || !testCaseIds) {
+      return res.status(400).json({ success: false, error: 'agentId, batches, and testCaseIds are required' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO saved_batches (agent_id, user_id, name, batch_data, test_case_ids)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [agentId, userId, name || `Batch ${new Date().toLocaleDateString()}`, JSON.stringify(batches), testCaseIds]
+    );
+
+    res.json({ success: true, savedBatch: result.rows[0] });
+  } catch (error: any) {
+    logger.error(`[SaveBatches] Error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Get saved batches for an agent
+ */
+router.get('/saved-batches/:agentId', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { agentId } = req.params;
+
+    const result = await pool.query(
+      `SELECT * FROM saved_batches WHERE agent_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
+      [agentId, userId]
+    );
+
+    res.json({ success: true, savedBatches: result.rows });
+  } catch (error: any) {
+    logger.error(`[GetSavedBatches] Error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Delete a saved batch
+ */
+router.delete('/saved-batches/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { id } = req.params;
+
+    await pool.query(
+      `DELETE FROM saved_batches WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    );
+
+    res.json({ success: true });
+  } catch (error: any) {
+    logger.error(`[DeleteSavedBatch] Error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

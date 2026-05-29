@@ -17,6 +17,14 @@ import observabilityRoutes from './routes/observability.routes';
 import superadminRoutes from './routes/superadmin.routes';
 import adminLogsRoutes from './routes/admin.logs.routes';
 import bookingRoutes from './routes/booking.routes';
+import abTestRoutes from './routes/ab-test.routes';
+import ciCdRoutes from './routes/ci-cd.routes';
+import rubricsRoutes from './routes/rubrics.routes';
+import flowComplianceRoutes from './routes/flow-compliance.routes';
+import loadTestRoutes from './routes/load-test.routes';
+import toolValidationRoutes from './routes/tool-validation.routes';
+import costAdvisorRoutes from './routes/cost-advisor.routes';
+import multiLanguageRoutes from './routes/multi-language.routes';
 
 const app = express();
 
@@ -40,16 +48,14 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
     ].filter(Boolean);
 
 app.use(cors({
-  origin: isProduction 
-    ? (origin, callback) => {
-        // Allow requests with no origin (like mobile apps or curl)
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.some(allowed => origin.startsWith(allowed.replace(/\/$/, '')))) {
-          return callback(null, true);
-        }
-        callback(new Error('Not allowed by CORS'));
-      }
-    : true, // Allow all origins in development
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.some(allowed => origin.startsWith(allowed.replace(/\/$/, '')))) {
+      return callback(null, true);
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Correlation-ID', 'X-Request-ID'],
@@ -232,30 +238,7 @@ app.get('/recordings/:filename', (req, res) => {
   }
 });
 
-// Scheduler status (for debugging)
-app.get('/api/scheduler-status', async (req, res) => {
-  try {
-    const { schedulerService } = require('./services/scheduler.service');
-    const { ScheduledTestModel } = require('./models/scheduledTest.model');
-    
-    const status = schedulerService.getStatus();
-    const dueTests = await ScheduledTestModel.findDueTests();
-    
-    res.json({
-      scheduler: status,
-      dueTestsCount: dueTests.length,
-      dueTests: dueTests.map((t: any) => ({ 
-        id: t.id, 
-        name: t.name, 
-        next_run_at: t.next_run_at,
-        status: t.status 
-      })),
-      serverTime: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get scheduler status', message: (error as Error).message });
-  }
-});
+// Scheduler status (protected - moved after auth)
 
 // Clerk authentication middleware
 app.use(clerkAuth);
@@ -366,10 +349,9 @@ app.get('/api/public/packages', async (req, res) => {
   }
 });
 
-// Development test endpoints - ONLY available in non-production environments
-// These bypass authentication and should NEVER be enabled in production
-if (!isProduction) {
-  logger.security.warn('Development endpoints enabled - DO NOT USE IN PRODUCTION');
+// Development endpoints REMOVED for security (were exposing raw DB queries without auth).
+// Use /api/superadmin routes with proper admin auth for debugging.
+if (false) { // PERMANENTLY DISABLED
   
   app.get('/api/dev/agents', async (req, res) => {
     const pool = require('./db').default;
@@ -509,6 +491,31 @@ app.get('/api/custom-agents/config/voices', async (req, res) => {
   }
 });
 
+// Scheduler status (protected - requires authentication)
+app.get('/api/scheduler-status', requireAuthentication, async (req, res) => {
+  try {
+    const { schedulerService } = require('./services/scheduler.service');
+    const { ScheduledTestModel } = require('./models/scheduledTest.model');
+    
+    const status = schedulerService.getStatus();
+    const dueTests = await ScheduledTestModel.findDueTests();
+    
+    res.json({
+      scheduler: status,
+      dueTestsCount: dueTests.length,
+      dueTests: dueTests.map((t: any) => ({ 
+        id: t.id, 
+        name: t.name, 
+        next_run_at: t.next_run_at,
+        status: t.status 
+      })),
+      serverTime: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get scheduler status', message: (error as Error).message });
+  }
+});
+
 // Protected API routes
 app.use('/api', requireAuthentication, routes);
 
@@ -517,6 +524,31 @@ app.use('/api/monitoring', requireAuthentication, monitoringRoutes);
 
 // Protected observability routes
 app.use('/api/observability', requireAuthentication, observabilityRoutes);
+
+// Protected A/B test routes
+app.use('/api/ab-tests', requireAuthentication, abTestRoutes);
+
+// CI/CD routes (trigger/status use API key auth; generate-key needs clerk auth via middleware in route)
+app.use('/api/ci/generate-key', requireAuthentication);
+app.use('/api/ci', ciCdRoutes);
+
+// Custom evaluation rubrics
+app.use('/api/rubrics', requireAuthentication, rubricsRoutes);
+
+// Conversation flow compliance
+app.use('/api/flows', requireAuthentication, flowComplianceRoutes);
+
+// Load & concurrency testing
+app.use('/api/load-tests', requireAuthentication, loadTestRoutes);
+
+// Tool call payload validation
+app.use('/api/tool-validation', requireAuthentication, toolValidationRoutes);
+
+// Cost optimization advisor
+app.use('/api/cost-advisor', requireAuthentication, costAdvisorRoutes);
+
+// Multi-language testing
+app.use('/api/multi-language', requireAuthentication, multiLanguageRoutes);
 
 // 404 handler
 app.use(notFoundHandler);

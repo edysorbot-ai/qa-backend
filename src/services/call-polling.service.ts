@@ -13,6 +13,7 @@
 import pool from '../db';
 import { realtimeAnalysisService } from './realtime-analysis.service';
 import { integrationService } from './integration.service';
+import { deductCredits, FeatureKeys, getFeatureCreditCost } from '../middleware/credits.middleware';
 import { resolveElevenLabsBaseUrl } from '../providers/elevenlabs.provider';
 
 const RETELL_BASE_URL = 'https://api.retellai.com';
@@ -503,9 +504,23 @@ class CallPollingService {
 
             result.newCalls++;
 
-            // Trigger analysis for the new call
+            // Trigger analysis for the new call — only if user has credits
             const callId = insertResult.rows[0].id;
-            realtimeAnalysisService.processCall(callId).catch(console.error);
+            const creditCost = await getFeatureCreditCost(FeatureKeys.PRODUCTION_CALL_ANALYZE);
+            const credited = await deductCredits(
+              userId, creditCost, 
+              'Auto-analysis of production call',
+              { callId, agentId }
+            );
+            if (credited) {
+              realtimeAnalysisService.processCall(callId).catch(console.error);
+            } else {
+              // Mark as skipped — user can manually reanalyze later
+              await pool.query(
+                `UPDATE production_calls SET analysis_status = 'skipped_no_credits' WHERE id = $1`,
+                [callId]
+              );
+            }
           }
         }
       }

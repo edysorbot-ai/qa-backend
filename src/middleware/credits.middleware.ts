@@ -39,6 +39,12 @@ export const FeatureKeys = {
   TEAM_MEMBER_ADD: 'team_member_add',
   PRODUCTION_MONITORING_ENABLE: 'production_monitoring_enable',
   PRODUCTION_CALL_ANALYZE: 'production_call_analyze',
+  CONSISTENCY_TEST_RUN: 'consistency_test_run',
+  LEAKAGE_SCENARIO_GENERATE: 'leakage_scenario_generate',
+  SENSITIVE_DATA_ANALYZE: 'sensitive_data_analyze',
+  INFERENCE_SCAN: 'inference_scan',
+  PROMPT_ANALYZE: 'prompt_analyze',
+  INTEGRATION_ANALYZE_AGENT: 'integration_analyze_agent',
 } as const;
 
 /**

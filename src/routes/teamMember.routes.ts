@@ -7,6 +7,7 @@ import { clerkClient } from '@clerk/express';
 import { pool } from '../db';
 import { 
   requireSubscription,
+  requireSubscriptionAndCredits,
   FeatureKeys 
 } from '../middleware/credits.middleware';
 
@@ -58,12 +59,13 @@ async function checkTeamMemberLimit(userId: string): Promise<{ allowed: boolean;
 }
 
 /**
- * Assign owner's package and credits to a team member
- * Team members share the same package as their owner
+ * Assign owner's package reference to a team member.
+ * Team members share the owner's credits via getOwnerUserId() resolution — 
+ * no separate credit balance is created to avoid credit inflation.
  */
 async function assignOwnerPackageToTeamMember(ownerUserId: string, teamMemberEmail: string): Promise<void> {
   try {
-    // Get owner's package and credits info
+    // Get owner's package info (just for validation/logging)
     const ownerCredits = await pool.query(`
       SELECT uc.*, cp.name as package_name
       FROM user_credits uc
@@ -72,48 +74,15 @@ async function assignOwnerPackageToTeamMember(ownerUserId: string, teamMemberEma
     `, [ownerUserId]);
 
     if (!ownerCredits.rows[0]) {
-      console.log('[TeamMember] Owner has no package assigned, skipping team member package assignment');
+      console.log('[TeamMember] Owner has no package assigned, team member will use owner credits via getOwnerUserId()');
       return;
     }
 
     const ownerPackage = ownerCredits.rows[0];
-
-    // Get team member's user ID (they were just created in Clerk and our system)
-    const teamMemberResult = await pool.query(`
-      SELECT u.id FROM users u
-      WHERE u.email = $1
-    `, [teamMemberEmail]);
-
-    if (!teamMemberResult.rows[0]) {
-      console.log('[TeamMember] Team member user not found, will be assigned package on first login');
-      return;
-    }
-
-    const teamMemberUserId = teamMemberResult.rows[0].id;
-
-    // Check if team member already has credits record
-    const existingCredits = await pool.query(
-      `SELECT id FROM user_credits WHERE user_id = $1`,
-      [teamMemberUserId]
-    );
-
-    if (existingCredits.rows.length === 0) {
-      // Create user_credits record with owner's package (sharing same credits/limits)
-      await pool.query(`
-        INSERT INTO user_credits (user_id, package_id, current_credits, total_credits_purchased, package_expires_at)
-        VALUES ($1, $2, $3, $4, $5)
-      `, [
-        teamMemberUserId,
-        ownerPackage.package_id,
-        ownerPackage.current_credits,  // Share same credits
-        ownerPackage.total_credits_purchased,
-        ownerPackage.package_expires_at
-      ]);
-      console.log(`[TeamMember] Assigned owner's package "${ownerPackage.package_name}" to team member ${teamMemberEmail}`);
-    }
+    console.log(`[TeamMember] Team member ${teamMemberEmail} will share owner's package "${ownerPackage.package_name}" via getOwnerUserId()`);
+    // No separate user_credits row needed — credits middleware resolves to owner automatically
   } catch (error) {
-    console.error('[TeamMember] Failed to assign owner package to team member:', error);
-    // Don't fail team member creation if package assignment fails
+    console.error('[TeamMember] Error in assignOwnerPackageToTeamMember:', error);
   }
 }
 
@@ -166,7 +135,7 @@ router.get('/check-role', async (req: Request, res: Response) => {
  * Create a new team member (requires subscription with team member quota)
  */
 router.post('/', 
-  requireSubscription,
+  ...requireSubscriptionAndCredits(FeatureKeys.TEAM_MEMBER_ADD),
   async (req: Request, res: Response) => {
   try {
     const userId = await getUserIdFromRequest(req);

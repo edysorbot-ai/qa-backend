@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 /**
  * Workflow Controller
  * Handles HTTP requests for workflow operations
@@ -22,7 +23,7 @@ export class WorkflowController {
       
       res.json({ workflow });
     } catch (error) {
-      console.error('Error getting workflow:', error);
+      logger.error(`Error getting workflow:`, { error });
       res.status(500).json({ error: 'Failed to get workflow' });
     }
   }
@@ -68,7 +69,7 @@ export class WorkflowController {
         message: 'Workflow saved successfully',
       });
     } catch (error) {
-      console.error('Error saving workflow:', error);
+      logger.error(`Error saving workflow:`, { error });
       res.status(500).json({ error: 'Failed to save workflow' });
     }
   }
@@ -89,7 +90,7 @@ export class WorkflowController {
       
       res.json({ message: 'Workflow deleted successfully' });
     } catch (error) {
-      console.error('Error deleting workflow:', error);
+      logger.error(`Error deleting workflow:`, { error });
       res.status(500).json({ error: 'Failed to delete workflow' });
     }
   }
@@ -110,7 +111,7 @@ export class WorkflowController {
       
       res.json({ executionPlan });
     } catch (error) {
-      console.error('Error getting execution plan:', error);
+      logger.error(`Error getting execution plan:`, { error });
       res.status(500).json({ error: 'Failed to generate execution plan' });
     }
   }

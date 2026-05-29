@@ -267,6 +267,8 @@ export class SchedulerService {
       // Update the scheduled test after successful start
       logger.scheduler.info(`Updating scheduled test after run...`, { scheduledTestId: scheduledTest.id });
       await ScheduledTestModel.updateAfterRun(scheduledTest.id);
+      // Reset failure counter on success
+      await pool.query('UPDATE scheduled_tests SET consecutive_failures = 0, last_failure_reason = NULL WHERE id = $1', [scheduledTest.id]);
       logger.scheduler.info(`Scheduled test updated`, { scheduledTestId: scheduledTest.id });
 
       logger.scheduler.info(`Started test run for scheduled test`, { 
@@ -294,6 +296,49 @@ export class SchedulerService {
         scheduledTestId: scheduledTest.id,
         error: errorMsg,
       });
+
+      // Increment failure count and pause after 3 consecutive failures
+      await this.handleScheduledTestFailure(scheduledTest.id, scheduledTest.user_id, errorMsg);
+    }
+  }
+
+  /**
+   * Handle scheduled test failure with retry logic.
+   * Pauses test after 3 consecutive failures and notifies user.
+   */
+  private async handleScheduledTestFailure(scheduledTestId: string, userId: string, errorMsg: string): Promise<void> {
+    try {
+      // Increment consecutive_failures counter
+      const result = await pool.query(`
+        UPDATE scheduled_tests 
+        SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1,
+            last_failure_reason = $2,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING consecutive_failures
+      `, [scheduledTestId, errorMsg]);
+
+      const failures = result.rows[0]?.consecutive_failures || 1;
+
+      if (failures >= 3) {
+        logger.scheduler.warn(`Pausing scheduled test after ${failures} consecutive failures`, { scheduledTestId });
+        await ScheduledTestModel.updateStatus(scheduledTestId, "paused");
+
+        // Notify user via email
+        try {
+          const userResult = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+          const email = userResult.rows[0]?.email;
+          if (email) {
+            await emailNotificationService.sendScheduledTestPausedNotification(
+              email, scheduledTestId, errorMsg, failures
+            );
+          }
+        } catch (notifError) {
+          logger.scheduler.error('Failed to send pause notification', { scheduledTestId, error: notifError });
+        }
+      }
+    } catch (dbError) {
+      logger.scheduler.error('Failed to update failure count', { scheduledTestId, error: dbError });
     }
   }
 

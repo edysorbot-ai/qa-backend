@@ -45,8 +45,11 @@ router.post('/:id/generate-test-cases',
   agentController.generateTestCases.bind(agentController)
 );
 
-// POST /api/agents/:id/analyze-prompt - Analyze agent's prompt using AI
-router.post('/:id/analyze-prompt', agentController.analyzePrompt.bind(agentController));
+// POST /api/agents/:id/analyze-prompt - Analyze agent's prompt using AI (requires credits)
+router.post('/:id/analyze-prompt', 
+  ...requireSubscriptionAndCredits(FeatureKeys.PROMPT_ANALYZE),
+  agentController.analyzePrompt.bind(agentController)
+);
 
 // GET /api/agents/:id/dynamic-variables - Get dynamic variables from agent's prompt
 router.get('/:id/dynamic-variables', agentController.getDynamicVariables.bind(agentController));

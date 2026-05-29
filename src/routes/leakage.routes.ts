@@ -10,6 +10,7 @@ import {
   analyzeSensitiveData,
   generateLeakageScenarios,
 } from '../controllers/leakage.controller';
+import { requireSubscriptionAndCredits, FeatureKeys } from '../middleware/credits.middleware';
 
 const router = Router();
 
@@ -23,8 +24,14 @@ router.post('/agents/:agentId/leakage-tests/:scenarioId/run', requireAuth(), run
 router.get('/agents/:agentId/leakage-tests', requireAuth(), getLeakageTestRuns);
 router.get('/agents/:agentId/security-summary', requireAuth(), getSecuritySummary);
 
-// Auto-generation routes (uses agent's prompt and knowledge base)
-router.post('/agents/:agentId/analyze-sensitive-data', requireAuth(), analyzeSensitiveData);
-router.post('/agents/:agentId/generate-leakage-scenarios', requireAuth(), generateLeakageScenarios);
+// Auto-generation routes (uses agent's prompt and knowledge base) — credit protected
+router.post('/agents/:agentId/analyze-sensitive-data', requireAuth(), 
+  ...requireSubscriptionAndCredits(FeatureKeys.SENSITIVE_DATA_ANALYZE),
+  analyzeSensitiveData
+);
+router.post('/agents/:agentId/generate-leakage-scenarios', requireAuth(), 
+  ...requireSubscriptionAndCredits(FeatureKeys.LEAKAGE_SCENARIO_GENERATE),
+  generateLeakageScenarios
+);
 
 export default router;

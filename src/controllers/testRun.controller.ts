@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 import { Request, Response, NextFunction } from 'express';
 import { testRunService } from '../services/testRun.service';
 import { testResultService } from '../services/testResult.service';
@@ -9,6 +10,7 @@ import { workflowTestExecutorService } from '../services/workflow-test-executor.
 import { WorkflowExecutionPlan } from '../models/workflow.model';
 import { teamMemberService } from '../services/teamMember.service';
 import { testExecutionQueue } from '../services/queue.service';
+import { cancelTestRunExecution } from '../services/real-test-executor.service';
 import { contextGrowthService } from '../services/context-growth.service';
 import * as toolDecisionService from '../services/tool-decision.service';
 
@@ -22,16 +24,16 @@ export class TestRunController {
       const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { agent_id, limit } = req.query;
-      console.log('[TestRunController.getAll] agent_id:', agent_id, 'effective_user_id:', effectiveUserId);
+      logger.info(`[TestRunController.getAll] agent_id:`, { detail: agent_id, 'effective_user_id:', effectiveUserId });
 
       let testRuns;
       if (agent_id) {
         // Also match by agent name in test run name for legacy runs without agent_id
         testRuns = await testRunService.findByAgentIdOrName(agent_id as string, effectiveUserId, Number(limit) || 50);
-        console.log('[TestRunController.getAll] Found by agent_id/name:', testRuns.length);
+        logger.info(`[TestRunController.getAll] Found by agent_id/name:`, { detail: testRuns.length });
       } else {
         testRuns = await testRunService.findByUserId(effectiveUserId, Number(limit) || 50);
-        console.log('[TestRunController.getAll] Found by user_id:', testRuns.length);
+        logger.info(`[TestRunController.getAll] Found by user_id:`, { detail: testRuns.length });
       }
 
       res.json({ testRuns });
@@ -142,11 +144,14 @@ export class TestRunController {
       // Cancel any queued/running jobs for this test run
       try {
         const cancelledJobs = await testExecutionQueue.cancelTestRun(id);
-        console.log(`[TestRunController.cancel] Cancelled ${cancelledJobs} jobs for test run ${id}`);
+        logger.info(`[TestRunController.cancel] Cancelled ${cancelledJobs} jobs for test run ${id}`);
       } catch (queueError) {
-        console.error('[TestRunController.cancel] Error cancelling queue jobs:', queueError);
+        logger.error(`[TestRunController.cancel] Error cancelling queue jobs:`, { detail: queueError });
         // Continue to update status even if queue cancellation fails
       }
+
+      // Signal active voice calls to terminate
+      cancelTestRunExecution(id);
 
       const testRun = await testRunService.update(id, {
         status: 'cancelled',
@@ -197,11 +202,11 @@ export class TestRunController {
       // Filter out any null results
       const validRuns = testRuns.filter(Boolean);
       
-      console.log('[compare] Valid runs:', validRuns.length);
+      logger.info(`[compare] Valid runs:`, { detail: validRuns.length });
       validRuns.forEach((run: any) => {
-        console.log(`[compare] Run ${run.id}: ${run.name}, results count: ${run.results?.length || 0}`);
+        logger.info(`[compare] Run ${run.id}: ${run.name}, results count: ${run.results?.length || 0}`);
         if (run.results?.length > 0) {
-          console.log('[compare] First result sample:', JSON.stringify(run.results[0], null, 2));
+          logger.info(`[compare] First result sample:`, { detail: JSON.stringify(run.results[0], null, 2 }));
         }
       });
 
@@ -212,8 +217,8 @@ export class TestRunController {
       // Build comparison data
       const comparison = this.buildComparisonData(validRuns);
       
-      console.log('[compare] Comparison metrics:', comparison.runMetrics);
-      console.log('[compare] Total test cases:', comparison.totalTestCases);
+      logger.info(`[compare] Comparison metrics:`, { detail: comparison.runMetrics });
+      logger.info(`[compare] Total test cases:`, { detail: comparison.totalTestCases });
 
       res.json({ comparison, testRuns: validRuns });
     } catch (error) {
@@ -427,7 +432,7 @@ export class TestRunController {
             agentPrompt,
             async (progress) => {
               // Update test run progress
-              console.log(`[WorkflowController] Progress: ${progress.completedCalls}/${progress.totalCalls} calls`);
+              logger.info(`[WorkflowController] Progress: ${progress.completedCalls}/${progress.totalCalls} calls`);
             }
           );
 
@@ -439,9 +444,9 @@ export class TestRunController {
             failed_tests: result.failedTestCases,
           });
 
-          console.log(`[WorkflowController] Workflow execution completed: ${result.status}`);
+          logger.info(`[WorkflowController] Workflow execution completed: ${result.status}`);
         } catch (error) {
-          console.error('[WorkflowController] Workflow execution error:', error);
+          logger.error(`[WorkflowController] Workflow execution error:`, { error });
           await testRunService.update(testRun.id, {
             status: 'failed',
             completed_at: new Date(),

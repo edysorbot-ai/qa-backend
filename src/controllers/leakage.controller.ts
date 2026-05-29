@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 import { Request, Response, NextFunction } from 'express';
 import { pool } from '../db';
 import { getLeakageTestService, BUILTIN_SCENARIOS } from '../services/leakage-test.service';
@@ -30,7 +31,7 @@ export async function getLeakageScenarios(req: Request, res: Response, next: Nex
 
     res.json({ scenarios });
   } catch (error) {
-    console.error('Error getting leakage scenarios', error);
+    logger.error(`Error getting leakage scenarios`, { error });
     next(error);
   }
 }
@@ -73,7 +74,7 @@ export async function createLeakageScenario(req: Request, res: Response, next: N
 
     res.status(201).json(scenario);
   } catch (error) {
-    console.error('Error creating leakage scenario', error);
+    logger.error(`Error creating leakage scenario`, { error });
     next(error);
   }
 }
@@ -126,7 +127,7 @@ export async function runLeakageTest(req: Request, res: Response, next: NextFunc
 
     res.json(result);
   } catch (error) {
-    console.error('Error running leakage test', error);
+    logger.error(`Error running leakage test`, { error });
     next(error);
   }
 }
@@ -157,7 +158,7 @@ export async function getLeakageTestRuns(req: Request, res: Response, next: Next
 
     res.json({ runs });
   } catch (error) {
-    console.error('Error getting leakage test runs', error);
+    logger.error(`Error getting leakage test runs`, { error });
     next(error);
   }
 }
@@ -188,7 +189,7 @@ export async function getSecuritySummary(req: Request, res: Response, next: Next
 
     res.json(summary);
   } catch (error) {
-    console.error('Error getting security summary', error);
+    logger.error(`Error getting security summary`, { error });
     next(error);
   }
 }
@@ -209,7 +210,7 @@ export async function getBuiltinScenarios(req: Request, res: Response, next: Nex
 
     res.json({ scenarios });
   } catch (error) {
-    console.error('Error getting builtin scenarios', error);
+    logger.error(`Error getting builtin scenarios`, { error });
     next(error);
   }
 }
@@ -259,7 +260,7 @@ export async function analyzeSensitiveData(req: Request, res: Response, next: Ne
         : 'No sensitive data patterns detected in prompt'
     });
   } catch (error) {
-    console.error('Error analyzing sensitive data', error);
+    logger.error(`Error analyzing sensitive data`, { error });
     next(error);
   }
 }
@@ -316,7 +317,7 @@ export async function generateLeakageScenarios(req: Request, res: Response, next
         : 'Could not generate scenarios. Try adding more details to the agent prompt.'
     });
   } catch (error) {
-    console.error('Error generating leakage scenarios', error);
+    logger.error(`Error generating leakage scenarios`, { error });
     next(error);
   }
 }

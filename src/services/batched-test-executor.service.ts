@@ -117,6 +117,8 @@ function interleaveAudioBuffers(
 export class BatchedTestExecutorService {
   private openai: OpenAI;
   private elevenLabsApiKey: string;
+  private currentAgentPrompt: string = '';
+  private falsePositivePatterns: Array<{ test_case_scenario: string; actual_response: string; reason: string }> = [];
 
   constructor() {
     this.openai = new OpenAI({
@@ -131,8 +133,13 @@ export class BatchedTestExecutorService {
   async executeBatch(
     batch: CallBatch,
     agentConfig: { provider: string; agentId: string; apiKey: string; baseUrl?: string | null },
-    agentPrompt: string
+    agentPrompt: string,
+    falsePositivePatterns?: Array<{ test_case_scenario: string; actual_response: string; reason: string }>
   ): Promise<BatchExecutionResult> {
+    // Store agent prompt for use in test caller prompt building
+    this.currentAgentPrompt = agentPrompt;
+    this.falsePositivePatterns = falsePositivePatterns || [];
+    
     console.log(`[BatchedExecutor] Starting batch: ${batch.name}`);
     console.log(`[BatchedExecutor] Test cases: ${batch.testCases.map(tc => tc.name).join(', ')}`);
     console.log(`[BatchedExecutor] TestMode: ${batch.testMode || 'voice (default)'}`);
@@ -2888,6 +2895,23 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
     // Identify conversation flow expectations
     const flowAnalysis = this.analyzeExpectedConversationFlow(testCases);
 
+    // Include agent prompt summary for flow understanding
+    const agentFlowContext = this.currentAgentPrompt 
+      ? `\n=== AGENT'S DESIGNED CONVERSATION FLOW (FROM AGENT PROMPT) ===
+The agent you are calling has the following instructions/purpose:
+---
+${this.currentAgentPrompt.substring(0, 2000)}${this.currentAgentPrompt.length > 2000 ? '\n[...truncated]' : ''}
+---
+IMPORTANT: Based on the above agent prompt, you MUST understand:
+1. What information the agent will ask for BEFORE answering questions
+2. What flow/steps the agent follows (e.g., greeting → collect name → collect preferences → provide info)
+3. What conditions must be met before the agent will address specific topics
+4. You MUST go through the agent's ENTIRE designed flow naturally before expecting answers to test scenarios
+5. If the agent asks for your name, preferences, context, etc. — provide them FIRST. Only then will the agent give you the information your test scenarios need.
+
+DO NOT skip any step the agent requires. A real customer would follow this flow — so must you.\n` 
+      : '';
+
     return `You are ${persona.name}, a test caller making a phone call to test a voice AI agent. Your job is to have a NATURAL conversation while systematically covering specific test scenarios.
 
 === YOUR PERSONA ===
@@ -2897,7 +2921,7 @@ ${persona.details}
 You are testing: ${testCaseAnalysis.agentPurpose}
 Key topics to cover: ${testCaseAnalysis.keyTopics.join(', ')}
 Call ending scenarios: ${testCaseAnalysis.callEndingScenarios.join(', ') || 'None specified'}
-
+${agentFlowContext}
 === CRITICAL: FOLLOW THE AGENT'S CONVERSATION FLOW FIRST ===
 AI agents are designed with a specific conversation flow (e.g., greeting → qualifying questions → collecting info → providing answers). You MUST follow this flow as a real customer would:
 
@@ -3498,7 +3522,11 @@ The test caller follows the agent's designed conversation flow (greeting → qua
 - You should evaluate whether the agent addressed each test case AT ANY POINT during the conversation
 - DO NOT penalize for the conversation following a natural flow before reaching test scenarios
 - The order of test coverage may differ from the listed order — focus on whether each scenario was EVENTUALLY covered
-
+${this.falsePositivePatterns.length > 0 ? `
+IMPORTANT - KNOWN FALSE POSITIVE PATTERNS (DO NOT mark these as failures):
+The following scenarios have been previously marked as false positives by the user. If the agent's response matches these patterns, mark the test as PASSED:
+${this.falsePositivePatterns.map((p, i) => `${i + 1}. Scenario: "${p.test_case_scenario}" → Response: "${p.actual_response}" — Reason: ${p.reason}`).join('\n')}
+` : ''}
 For each test case, evaluate:
 1. Was the scenario covered at any point in the conversation?
 2. Did the agent respond appropriately when the scenario was raised?

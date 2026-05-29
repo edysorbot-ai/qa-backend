@@ -118,6 +118,19 @@ export interface TestResult {
 
 // ============= SERVICE =============
 
+// Global map of cancelled test run IDs for active call termination
+const cancelledTestRuns = new Set<string>();
+
+export function cancelTestRunExecution(testRunId: string): void {
+  cancelledTestRuns.add(testRunId);
+  // Clean up after 10 minutes to prevent memory leak
+  setTimeout(() => cancelledTestRuns.delete(testRunId), 10 * 60 * 1000);
+}
+
+export function isTestRunCancelled(testRunId: string): boolean {
+  return cancelledTestRuns.has(testRunId);
+}
+
 export class RealTestExecutorService {
   private ttsService: TTSService | null = null;
   private asrService: ASRService | null = null;
@@ -291,6 +304,7 @@ export class RealTestExecutorService {
   /**
    * Execute a single test with real voice agent call
    * Uses ConversationalTestAgent for multi-turn conversation
+   * Includes a 5-minute hard timeout to prevent resource leaks.
    */
   private async executeTest(
     testCase: TestCase,
@@ -298,12 +312,12 @@ export class RealTestExecutorService {
     ttsConfig?: TTSConfig
   ): Promise<TestResult> {
     const startTime = Date.now();
+    const TEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes hard limit
 
     try {
       // Use the conversational test agent for real two-way conversation
-      console.log(`[RealTestExecutor] Starting conversational test with ${agentConfig.provider}...`);
-      
-      const conversationResult = await conversationalTestAgent.executeConversationalTest(
+      // Wrap in a timeout to prevent indefinite hangs
+      const conversationPromise = conversationalTestAgent.executeConversationalTest(
         {
           id: testCase.id,
           name: testCase.name,
@@ -319,6 +333,12 @@ export class RealTestExecutorService {
           useRealAudio: true, // Enable real audio mode for recordings
         } as any
       );
+
+      // Apply hard timeout to prevent indefinite resource leaks
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Test execution timed out after ${TEST_TIMEOUT_MS / 1000}s`)), TEST_TIMEOUT_MS)
+      );
+      const conversationResult = await Promise.race([conversationPromise, timeoutPromise]);
 
       if (!conversationResult.success) {
         throw new Error(conversationResult.error || 'Conversation failed');

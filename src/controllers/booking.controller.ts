@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 import { Request, Response } from 'express';
 import { bookingService } from '../services/booking.service';
 import { BookingModel } from '../models/booking.model';
@@ -36,7 +37,7 @@ export class BookingController {
       const slots = await bookingService.getAvailableSlots(date);
       res.json({ date, slots });
     } catch (error: any) {
-      console.error('[BookingController] getAvailableSlots error:', error.message);
+      logger.error(`[BookingController] getAvailableSlots error:`, { error: error.message });
       res.status(500).json({ error: 'Failed to fetch available slots' });
     }
   }
@@ -50,7 +51,7 @@ export class BookingController {
       const availability = await bookingService.getWeeklyAvailability();
       res.json({ availability });
     } catch (error: any) {
-      console.error('[BookingController] getWeeklyAvailability error:', error.message);
+      logger.error(`[BookingController] getWeeklyAvailability error:`, { error: error.message });
       res.status(500).json({ error: 'Failed to fetch weekly availability' });
     }
   }
@@ -114,7 +115,7 @@ export class BookingController {
         message: 'Demo booked successfully! Check your email for the meeting link.',
       });
     } catch (error: any) {
-      console.error('[BookingController] createBooking error:', error.message);
+      logger.error(`[BookingController] createBooking error:`, { error: error.message });
 
       // Handle "slot already taken" gracefully
       if (error.message?.includes('no longer available')) {
@@ -140,7 +141,7 @@ export class BookingController {
 
       res.json({ booking });
     } catch (error: any) {
-      console.error('[BookingController] getBooking error:', error.message);
+      logger.error(`[BookingController] getBooking error:`, { error: error.message });
       res.status(500).json({ error: 'Failed to fetch booking' });
     }
   }
@@ -165,7 +166,7 @@ export class BookingController {
         message: 'Booking has been cancelled.',
       });
     } catch (error: any) {
-      console.error('[BookingController] cancelBooking error:', error.message);
+      logger.error(`[BookingController] cancelBooking error:`, { error: error.message });
       res.status(500).json({ error: 'Failed to cancel booking' });
     }
   }

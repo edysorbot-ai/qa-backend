@@ -6,6 +6,7 @@ import {
   getComplianceSummary,
   acknowledgeInference,
 } from '../controllers/inference.controller';
+import { requireSubscriptionAndCredits, FeatureKeys } from '../middleware/credits.middleware';
 
 const router = Router();
 
@@ -28,7 +29,10 @@ const router = Router();
  *       200:
  *         description: Scan result
  */
-router.post('/test-results/:resultId/scan-inferences', scanTestResult);
+router.post('/test-results/:resultId/scan-inferences', 
+  ...requireSubscriptionAndCredits(FeatureKeys.INFERENCE_SCAN),
+  scanTestResult
+);
 
 /**
  * @swagger

@@ -1,11 +1,12 @@
 import express from "express";
 import { AdminModel } from "../models/admin.model";
 import { adminAuth, AdminRequest, generateAdminToken } from "../middleware/admin.middleware";
+import { authRateLimiter } from "../middleware/rateLimit.middleware";
 
 const router = express.Router();
 
-// Public route - Admin Login
-router.post("/login", async (req, res) => {
+// Public route - Admin Login (rate limited to prevent brute force)
+router.post("/login", authRateLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
 

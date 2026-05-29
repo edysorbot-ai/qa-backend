@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 import { Request, Response, NextFunction } from 'express';
 import { pool } from '../db';
 import { getConsistencyTestService } from '../services/consistency-test.service';
@@ -115,7 +116,7 @@ export async function startConsistencyTest(req: Request, res: Response, next: Ne
 
     res.status(201).json(result);
   } catch (error) {
-    console.error('Error starting consistency test', error);
+    logger.error(`Error starting consistency test`, { error });
     next(error);
   }
 }
@@ -150,7 +151,7 @@ export async function getConsistencyRun(req: Request, res: Response, next: NextF
 
     res.json(result);
   } catch (error) {
-    console.error('Error getting consistency run', error);
+    logger.error(`Error getting consistency run`, { error });
     next(error);
   }
 }
@@ -181,7 +182,7 @@ export async function getAgentConsistencyRuns(req: Request, res: Response, next:
 
     res.json({ runs });
   } catch (error) {
-    console.error('Error getting agent consistency runs', error);
+    logger.error(`Error getting agent consistency runs`, { error });
     next(error);
   }
 }
@@ -212,7 +213,7 @@ export async function getConsistencySummary(req: Request, res: Response, next: N
 
     res.json(summary);
   } catch (error) {
-    console.error('Error getting consistency summary', error);
+    logger.error(`Error getting consistency summary`, { error });
     next(error);
   }
 }

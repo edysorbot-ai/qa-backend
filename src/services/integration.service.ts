@@ -2,14 +2,37 @@ import { query } from '../db';
 import { Integration, CreateIntegrationDTO, UpdateIntegrationDTO, Provider } from '../models/integration.model';
 import { getProviderClient } from '../providers/provider.factory';
 import { ProviderValidationResult, VoiceAgent } from '../providers/provider.interface';
+import { encrypt, decrypt, isEncrypted } from './encryption.service';
 
 export class IntegrationService {
+  /**
+   * Decrypt API key from database (handles both encrypted and legacy plaintext)
+   */
+  private decryptApiKey(apiKey: string | null): string | null {
+    if (!apiKey) return null;
+    if (isEncrypted(apiKey)) {
+      return decrypt(apiKey);
+    }
+    // Legacy plaintext key - return as-is for backward compatibility
+    return apiKey;
+  }
+
+  /**
+   * Decrypt integration record's API key
+   */
+  private decryptIntegration(row: any): Integration {
+    if (row && row.api_key) {
+      row.api_key = this.decryptApiKey(row.api_key);
+    }
+    return row;
+  }
+
   async findById(id: string): Promise<Integration | null> {
     const result = await query(
       'SELECT * FROM integrations WHERE id = $1',
       [id]
     );
-    return result.rows[0] || null;
+    return result.rows[0] ? this.decryptIntegration(result.rows[0]) : null;
   }
 
   async findByUserId(userId: string): Promise<Integration[]> {
@@ -17,7 +40,7 @@ export class IntegrationService {
       'SELECT * FROM integrations WHERE user_id = $1 ORDER BY created_at DESC',
       [userId]
     );
-    return result.rows;
+    return result.rows.map(row => this.decryptIntegration(row));
   }
 
   async findByUserAndProvider(userId: string, provider: Provider): Promise<Integration | null> {
@@ -25,19 +48,20 @@ export class IntegrationService {
       'SELECT * FROM integrations WHERE user_id = $1 AND provider = $2',
       [userId, provider]
     );
-    return result.rows[0] || null;
+    return result.rows[0] ? this.decryptIntegration(result.rows[0]) : null;
   }
 
   async create(data: CreateIntegrationDTO): Promise<Integration> {
+    const encryptedKey = encrypt(data.api_key);
     const result = await query(
       `INSERT INTO integrations (user_id, provider, api_key, base_url, is_active)
        VALUES ($1, $2, $3, $4, false)
        ON CONFLICT (user_id, provider) 
        DO UPDATE SET api_key = $3, base_url = $4, is_active = false, updated_at = CURRENT_TIMESTAMP
        RETURNING *`,
-      [data.user_id, data.provider, data.api_key, data.base_url || null]
+      [data.user_id, data.provider, encryptedKey, data.base_url || null]
     );
-    return result.rows[0];
+    return this.decryptIntegration(result.rows[0]);
   }
 
   async update(id: string, data: UpdateIntegrationDTO): Promise<Integration | null> {
@@ -47,7 +71,7 @@ export class IntegrationService {
 
     if (data.api_key !== undefined) {
       fields.push(`api_key = $${paramCount++}`);
-      values.push(data.api_key);
+      values.push(encrypt(data.api_key));
     }
     if (data.base_url !== undefined) {
       fields.push(`base_url = $${paramCount++}`);
@@ -67,7 +91,7 @@ export class IntegrationService {
       `UPDATE integrations SET ${fields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
       values
     );
-    return result.rows[0] || null;
+    return result.rows[0] ? this.decryptIntegration(result.rows[0]) : null;
   }
 
   async delete(id: string): Promise<boolean> {

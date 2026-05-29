@@ -3,11 +3,15 @@
  * 
  * Receives real-time call events from production voice agents.
  * Each provider has its own webhook format.
+ * 
+ * Security: Validates webhook signatures when configured.
  */
 
 import { Router, Request, Response } from 'express';
 import pool from '../db';
 import { realtimeAnalysisService } from '../services/realtime-analysis.service';
+import crypto from 'crypto';
+import { logger } from '../services/logger.service';
 
 const router = Router();
 
@@ -16,6 +20,82 @@ let broadcastToUser: ((userId: string, event: string, data: any) => void) | null
 
 export function setWebSocketBroadcast(fn: (userId: string, event: string, data: any) => void) {
   broadcastToUser = fn;
+}
+
+/**
+ * Webhook signature verification middleware.
+ * Validates signatures from known providers to prevent spoofing.
+ * Logs a warning if no signature is present but allows through (backward compat).
+ */
+function verifyWebhookSignature(provider: string) {
+  return (req: Request, res: Response, next: Function) => {
+    const body = JSON.stringify(req.body);
+    
+    switch (provider) {
+      case 'retell': {
+        // Retell sends x-retell-signature header (HMAC-SHA256)
+        const signature = req.headers['x-retell-signature'] as string;
+        const secret = process.env.RETELL_WEBHOOK_SECRET;
+        if (secret && signature) {
+          const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+          if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+            logger.security.warn('Webhook signature mismatch', { provider, ip: req.ip });
+            return res.status(401).json({ error: 'Invalid signature' });
+          }
+        } else if (!signature) {
+          logger.security.info('Webhook received without signature', { provider, ip: req.ip });
+        }
+        break;
+      }
+      case 'vapi': {
+        // VAPI sends x-vapi-signature header (HMAC-SHA256)
+        const signature = req.headers['x-vapi-signature'] as string;
+        const secret = process.env.VAPI_WEBHOOK_SECRET;
+        if (secret && signature) {
+          const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+          if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+            logger.security.warn('Webhook signature mismatch', { provider, ip: req.ip });
+            return res.status(401).json({ error: 'Invalid signature' });
+          }
+        } else if (!signature) {
+          logger.security.info('Webhook received without signature', { provider, ip: req.ip });
+        }
+        break;
+      }
+      case 'elevenlabs': {
+        // ElevenLabs sends xi-signature header
+        const signature = req.headers['xi-signature'] as string;
+        const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+        if (secret && signature) {
+          const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+          if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+            logger.security.warn('Webhook signature mismatch', { provider, ip: req.ip });
+            return res.status(401).json({ error: 'Invalid signature' });
+          }
+        } else if (!signature) {
+          logger.security.info('Webhook received without signature', { provider, ip: req.ip });
+        }
+        break;
+      }
+      case 'bolna':
+      case 'livekit': {
+        // Generic token-based verification
+        const token = req.headers['x-webhook-token'] as string;
+        const secret = process.env[`${provider.toUpperCase()}_WEBHOOK_SECRET`];
+        if (secret && token) {
+          if (!crypto.timingSafeEqual(Buffer.from(token), Buffer.from(secret))) {
+            logger.security.warn('Webhook token mismatch', { provider, ip: req.ip });
+            return res.status(401).json({ error: 'Invalid token' });
+          }
+        } else if (!token) {
+          logger.security.info('Webhook received without token', { provider, ip: req.ip });
+        }
+        break;
+      }
+    }
+    
+    next();
+  };
 }
 
 /**
@@ -137,7 +217,7 @@ async function completeProductionCall(
 // ============================================
 // RETELL WEBHOOK
 // ============================================
-router.post('/retell', async (req: Request, res: Response) => {
+router.post('/retell', verifyWebhookSignature('retell'), async (req: Request, res: Response) => {
   try {
     const payload = req.body;
     console.log('[Webhook:Retell] Received:', payload.event || 'unknown event');
@@ -233,10 +313,10 @@ router.post('/retell', async (req: Request, res: Response) => {
 // ============================================
 // VAPI WEBHOOK
 // ============================================
-router.post('/vapi', async (req: Request, res: Response) => {
+router.post('/vapi', verifyWebhookSignature('vapi'), async (req: Request, res: Response) => {
   try {
     const payload = req.body;
-    console.log('[Webhook:VAPI] Received:', payload.message?.type || 'unknown');
+    logger.api.info('[Webhook:VAPI] Received:', { event: payload.message?.type || 'unknown' });
 
     const messageType = payload.message?.type;
     const call = payload.message?.call || payload.call || payload;
@@ -320,10 +400,10 @@ router.post('/vapi', async (req: Request, res: Response) => {
 // ============================================
 // ELEVENLABS WEBHOOK
 // ============================================
-router.post('/elevenlabs', async (req: Request, res: Response) => {
+router.post('/elevenlabs', verifyWebhookSignature('elevenlabs'), async (req: Request, res: Response) => {
   try {
     const payload = req.body;
-    console.log('[Webhook:ElevenLabs] Received:', payload.type || payload.event || 'unknown');
+    logger.api.info('[Webhook:ElevenLabs] Received:', { event: payload.type || payload.event || 'unknown' });
 
     const event = payload.type || payload.event;
     const data = payload.data || payload;
@@ -396,10 +476,10 @@ router.post('/elevenlabs', async (req: Request, res: Response) => {
 // ============================================
 // BOLNA WEBHOOK
 // ============================================
-router.post('/bolna', async (req: Request, res: Response) => {
+router.post('/bolna', verifyWebhookSignature('bolna'), async (req: Request, res: Response) => {
   try {
     const payload = req.body;
-    console.log('[Webhook:Bolna] Received:', payload.event || payload.status || 'unknown');
+    logger.api.info('[Webhook:Bolna] Received:', { event: payload.event || payload.status || 'unknown' });
 
     const event = payload.event || payload.status;
     const data = payload.data || payload;
@@ -475,10 +555,10 @@ router.post('/bolna', async (req: Request, res: Response) => {
 // ============================================
 // LIVEKIT WEBHOOK
 // ============================================
-router.post('/livekit', async (req: Request, res: Response) => {
+router.post('/livekit', verifyWebhookSignature('livekit'), async (req: Request, res: Response) => {
   try {
     const payload = req.body;
-    console.log('[Webhook:LiveKit] Received:', payload.event || 'unknown');
+    logger.api.info('[Webhook:LiveKit] Received:', { event: payload.event || 'unknown' });
 
     const event = payload.event;
     const room = payload.room || {};

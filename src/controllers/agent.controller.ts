@@ -1,3 +1,4 @@
+import { logger } from '../services/logger.service';
 import { Request, Response, NextFunction } from 'express';
 import { agentService } from '../services/agent.service';
 import { userService } from '../services/user.service';
@@ -345,7 +346,7 @@ export class AgentController {
         testCases: savedTestCases,
       });
     } catch (error: any) {
-      console.error('Error generating test cases:', error);
+      logger.error(`Error generating test cases:`, { error });
       // Return more specific error message
       const errorMessage = error?.message || 'Failed to generate test cases';
       res.status(500).json({ error: errorMessage, message: errorMessage });
@@ -487,7 +488,7 @@ Provide your analysis as a JSON object.`;
         weaknesses: analysis.weaknesses || [],
       });
     } catch (error: any) {
-      console.error('Error analyzing prompt:', error);
+      logger.error(`Error analyzing prompt:`, { error });
       res.status(500).json({ error: error?.message || 'Failed to analyze prompt' });
     }
   }
@@ -615,7 +616,7 @@ Provide your analysis as a JSON object.`;
         totalCount: variables.length,
       });
     } catch (error: any) {
-      console.error('Error extracting dynamic variables:', error);
+      logger.error(`Error extracting dynamic variables:`, { error });
       res.status(500).json({ error: error?.message || 'Failed to extract dynamic variables' });
     }
   }
@@ -652,7 +653,7 @@ Provide your analysis as a JSON object.`;
         variables,
       });
     } catch (error: any) {
-      console.error('Error saving dynamic variables:', error);
+      logger.error(`Error saving dynamic variables:`, { error });
       res.status(500).json({ error: error?.message || 'Failed to save dynamic variables' });
     }
   }
@@ -761,15 +762,15 @@ Provide your analysis as a JSON object.`;
           try {
             const providerAgentId = agent.external_agent_id;
             if (!providerAgentId) {
-              console.log('[KB] No external_agent_id found for ElevenLabs agent');
+              logger.info('[KB] No external_agent_id found for ElevenLabs agent');
               break;
             }
-            console.log(`[KB] Fetching ElevenLabs KB for agent: ${providerAgentId}`);
+            logger.info(`[KB] Fetching ElevenLabs KB for agent: ${providerAgentId}`);
             const kbDocs = await elevenlabsProvider.getKnowledgeBase(integration.api_key, providerAgentId);
-            console.log(`[KB] ElevenLabs returned ${kbDocs?.length || 0} documents`);
+            logger.info(`[KB] ElevenLabs returned ${kbDocs?.length || 0} documents`);
             
             if (Array.isArray(kbDocs) && kbDocs.length > 0) {
-              console.log('[KB] First doc sample:', JSON.stringify(kbDocs[0], null, 2));
+              logger.info(`[KB] First doc sample:`, { detail: JSON.stringify(kbDocs[0], null, 2 }));
               knowledgeBase.items = kbDocs.map((item: any, index: number) => ({
                 id: item.id || item.document_id || `kb-${index}`,
                 name: item.name || item.file_name || item.filename || `Document ${index + 1}`,
@@ -783,10 +784,10 @@ Provide your analysis as a JSON object.`;
                 size: item.metadata?.size_bytes || item.size || item.file_size,
               }));
             } else {
-              console.log('[KB] No documents returned from ElevenLabs API');
+              logger.info('[KB] No documents returned from ElevenLabs API');
             }
           } catch (elevenError: any) {
-            console.error('[KB] Error fetching ElevenLabs knowledge base:', elevenError?.message || elevenError);
+            logger.error(`[KB] Error fetching ElevenLabs knowledge base:`, { detail: elevenError?.message || elevenError });
             // Fallback to config-based extraction
             if (config.fullConfig?.knowledge_base || config.knowledge_base) {
               const kb = config.fullConfig?.knowledge_base || config.knowledge_base;
@@ -840,7 +841,7 @@ Provide your analysis as a JSON object.`;
 
       res.json(knowledgeBase);
     } catch (error: any) {
-      console.error('Error fetching knowledge base:', error);
+      logger.error(`Error fetching knowledge base:`, { error });
       res.status(500).json({ error: error?.message || 'Failed to fetch knowledge base' });
     }
   }
@@ -851,22 +852,22 @@ Provide your analysis as a JSON object.`;
   async getKnowledgeBaseDocumentContent(req: Request, res: Response, next: NextFunction) {
     try {
       const { id, documentId } = req.params;
-      console.log(`[KB Content] Fetching document content for agent: ${id}, document: ${documentId}`);
+      logger.info(`[KB Content] Fetching document content for agent: ${id}, document: ${documentId}`);
 
       const agent = await agentService.findById(id);
       if (!agent) {
-        console.log('[KB Content] Agent not found');
+        logger.info('[KB Content] Agent not found');
         return res.status(404).json({ error: 'Agent not found' });
       }
 
       // Get integration to fetch from provider
       const integration = await integrationService.findById(agent.integration_id);
       if (!integration) {
-        console.log('[KB Content] Integration not found');
+        logger.info('[KB Content] Integration not found');
         return res.status(404).json({ error: 'Integration not found' });
       }
 
-      console.log(`[KB Content] Provider: ${agent.provider}, fetching from ElevenLabs...`);
+      logger.info(`[KB Content] Provider: ${agent.provider}, fetching from ElevenLabs...`);
 
       let content = '';
       let contentType = 'text/plain';
@@ -878,13 +879,13 @@ Provide your analysis as a JSON object.`;
               integration.api_key,
               documentId
             );
-            console.log(`[KB Content] Successfully fetched content, length: ${content.length}`);
+            logger.info(`[KB Content] Successfully fetched content, length: ${content.length}`);
             // Check if content is HTML
             if (content.trim().startsWith('<')) {
               contentType = 'text/html';
             }
           } catch (error: any) {
-            console.error('[KB Content] ElevenLabs error:', error?.message);
+            logger.error(`[KB Content] ElevenLabs error:`, { detail: error?.message });
             return res.status(500).json({ 
               error: error?.message || 'Failed to fetch document content' 
             });
@@ -899,7 +900,7 @@ Provide your analysis as a JSON object.`;
 
       res.json({ content, contentType, documentId });
     } catch (error: any) {
-      console.error('Error fetching document content:', error);
+      logger.error(`Error fetching document content:`, { error });
       res.status(500).json({ error: error?.message || 'Failed to fetch document content' });
     }
   }

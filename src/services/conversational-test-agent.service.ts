@@ -61,6 +61,7 @@ interface ConversationResult {
 export class ConversationalTestAgentService {
   private openai: OpenAI | null = null;
   private elevenLabsApiKey: string;
+  private currentAgentPrompt: string = '';
 
   constructor() {
     this.elevenLabsApiKey = process.env.ELEVENLABS_API_KEY || '';
@@ -80,8 +81,14 @@ export class ConversationalTestAgentService {
    */
   async executeConversationalTest(
     testCase: TestCase,
-    agentConfig: AgentConfig
+    agentConfig: AgentConfig,
+    agentPrompt?: string
   ): Promise<ConversationResult> {
+    // Store agent prompt for use in test caller prompt building
+    if (agentPrompt) {
+      this.currentAgentPrompt = agentPrompt;
+    }
+    
     console.log(`\n${'='.repeat(50)}`);
     console.log(`[ConversationalTestAgent] Starting test: ${testCase.name}`);
     console.log(`[ConversationalTestAgent] Provider: ${agentConfig.provider}`);
@@ -1137,6 +1144,23 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
     console.log(`  - UserInput: ${testCase.userInput}`);
     console.log(`  - ExpectedOutcome: ${testCase.expectedOutcome}`);
     
+    // Include agent prompt context for full-flow understanding
+    const agentFlowContext = this.currentAgentPrompt 
+      ? `\n=== AGENT'S DESIGNED CONVERSATION FLOW (FROM AGENT PROMPT) ===
+The agent you are calling has the following instructions/purpose:
+---
+${this.currentAgentPrompt.substring(0, 2000)}${this.currentAgentPrompt.length > 2000 ? '\n[...truncated]' : ''}
+---
+Based on the agent's prompt above, you can understand:
+1. What information the agent REQUIRES before it will answer specific questions
+2. The exact conversation flow the agent follows
+3. What qualifying questions the agent will ask
+4. What conditions must be met before reaching your test scenario
+
+You MUST navigate through the agent's ENTIRE designed flow naturally. Provide all required information the agent asks for BEFORE expecting it to address your test scenario. A real customer would follow this flow — so must you.
+===\n`
+      : '';
+
     return `You are a TEST CALLER simulating a real customer for QA testing of a voice AI agent.
 
 YOUR ROLE:
@@ -1152,7 +1176,7 @@ ${testCase.userInput}
 
 EXPECTED AGENT BEHAVIOR:
 ${testCase.expectedOutcome}
-
+${agentFlowContext}
 === CRITICAL: FOLLOW THE AGENT'S CONVERSATION FLOW ===
 Most AI agents are designed with a specific conversation flow (e.g., greeting → qualifying questions → collecting info → providing answers → resolution). You MUST follow this flow naturally as a real customer would. DO NOT jump straight to your test question.
 
