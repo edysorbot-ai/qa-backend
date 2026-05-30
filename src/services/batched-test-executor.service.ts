@@ -3514,7 +3514,7 @@ Generate Alex's natural response:`;
     agentPrompt: string
   ): Promise<BatchTestResult[]> {
     const transcriptText = transcript
-      .map(t => `${t.role.toUpperCase()}: ${t.content}`)
+      .map((t, i) => `[Turn ${i}] ${t.role.toUpperCase()}: ${t.content}`)
       .join('\n');
 
     const systemPrompt = `You are a QA analyst evaluating a voice AI agent conversation. 
@@ -3538,6 +3538,8 @@ For each test case, evaluate:
 2. Did the agent respond appropriately when the scenario was raised?
 3. Did the response meet the expected outcome?
 
+IMPORTANT: Each transcript line starts with [Turn X] where X is the 0-based index. Use these EXACT indices in turnsCovered.
+
 Return JSON:
 {
   "results": [
@@ -3546,9 +3548,9 @@ Return JSON:
       "testCaseName": "name",
       "passed": true/false,
       "score": 0-100,
-      "actualResponse": "What the agent actually said for this test case",
+      "actualResponse": "Quote the agent's actual words that addressed this test case. If not covered, write 'Scenario not covered in conversation'",
       "reasoning": "Why it passed or failed",
-      "turnsCovered": [1, 2, 3]
+      "turnsCovered": [0, 1, 2]
     }
   ]
 }`;
