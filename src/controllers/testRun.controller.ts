@@ -24,7 +24,7 @@ export class TestRunController {
       const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
 
       const { agent_id, limit } = req.query;
-      logger.info(`[TestRunController.getAll] agent_id:`, { detail: agent_id, 'effective_user_id:', effectiveUserId });
+      logger.info(`[TestRunController.getAll] agent_id:`, { detail: agent_id, effective_user_id: effectiveUserId });
 
       let testRuns;
       if (agent_id) {
@@ -206,7 +206,7 @@ export class TestRunController {
       validRuns.forEach((run: any) => {
         logger.info(`[compare] Run ${run.id}: ${run.name}, results count: ${run.results?.length || 0}`);
         if (run.results?.length > 0) {
-          logger.info(`[compare] First result sample:`, { detail: JSON.stringify(run.results[0], null, 2 }));
+          logger.info(`[compare] First result sample:`, { detail: JSON.stringify(run.results[0], null, 2) });
         }
       });
 

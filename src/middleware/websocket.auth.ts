@@ -117,6 +117,7 @@ const verifyClerkToken = async (token: string): Promise<WebSocketAuthResult> => 
     }
 
     // Decode header to get key ID (kid)
+    try {
     const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString());
     const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
 

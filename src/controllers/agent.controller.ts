@@ -770,7 +770,7 @@ Provide your analysis as a JSON object.`;
             logger.info(`[KB] ElevenLabs returned ${kbDocs?.length || 0} documents`);
             
             if (Array.isArray(kbDocs) && kbDocs.length > 0) {
-              logger.info(`[KB] First doc sample:`, { detail: JSON.stringify(kbDocs[0], null, 2 }));
+              logger.info(`[KB] First doc sample:`, { detail: JSON.stringify(kbDocs[0], null, 2) });
               knowledgeBase.items = kbDocs.map((item: any, index: number) => ({
                 id: item.id || item.document_id || `kb-${index}`,
                 name: item.name || item.file_name || item.filename || `Document ${index + 1}`,
