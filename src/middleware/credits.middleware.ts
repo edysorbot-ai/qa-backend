@@ -85,14 +85,17 @@ async function getUserSubscription(userId: string): Promise<UserSubscription> {
     ? new Date(row.package_expires_at) < new Date() 
     : false;
 
+  // If user has credits, treat subscription as active regardless of expiry date
+  const hasCredits = (row.current_credits || 0) > 0;
+
   return {
     userId,
-    hasSubscription: !packageExpired,
+    hasSubscription: !packageExpired || hasCredits || row.is_unlimited,
     packageId: row.package_id,
     packageName: row.package_name,
     currentCredits: row.current_credits || 0,
     isUnlimited: row.is_unlimited || false,
-    packageExpired,
+    packageExpired: packageExpired && !hasCredits,
     features: row.features || {},
   };
 }

@@ -250,18 +250,19 @@ router.post('/check-credits', async (req: Request, res: Response) => {
 
     const userCredits = creditsResult.rows[0];
 
-    // Check if subscription has expired
+    // Check if subscription has expired AND user has no credits
     const isExpired = userCredits.package_expires_at && new Date(userCredits.package_expires_at) < new Date();
-    if (isExpired) {
+    const availableCredits = userCredits.current_credits || 0;
+    if (isExpired && availableCredits <= 0) {
       return res.status(402).json({
         success: false,
         error: {
           code: 'SUBSCRIPTION_INACTIVE',
-          message: 'Your subscription has expired. Please renew to continue testing.',
+          message: 'Your subscription has expired and you have no credits remaining. Please renew to continue testing.',
           details: {
             packageName: userCredits.package_name,
             required: testCaseCount * 10,
-            available: userCredits.current_credits || 0,
+            available: availableCredits,
           },
         },
       });
