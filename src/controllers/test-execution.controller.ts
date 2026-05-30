@@ -24,6 +24,7 @@ import {
 } from '../middleware/credits.middleware';
 import { userService } from '../services/user.service';
 import { teamMemberService } from '../services/teamMember.service';
+import { decrypt, isEncrypted } from '../services/encryption.service';
 
 // Create recordings directory if it doesn't exist
 const recordingsDir = path.join(__dirname, '../../recordings');
@@ -1445,6 +1446,10 @@ router.post('/start-batched',
       }
       
       apiKey = integrationResult.rows[0].api_key;
+      // Decrypt the API key if it's encrypted
+      if (apiKey && isEncrypted(apiKey)) {
+        apiKey = decrypt(apiKey);
+      }
       resolvedProvider = integrationResult.rows[0].provider;
       baseUrl = integrationResult.rows[0].base_url || null;
     }
