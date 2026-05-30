@@ -447,6 +447,9 @@ export class BatchedTestExecutorService {
       // User's integration API key takes priority over env var
       const effectiveApiKey = agentConfig.apiKey || this.elevenLabsApiKey;
       
+      console.log(`[BatchedExecutor] DEBUG Voice: agentConfig.apiKey starts with: ${agentConfig.apiKey ? agentConfig.apiKey.substring(0, 8) : 'EMPTY'}`);
+      console.log(`[BatchedExecutor] DEBUG Voice: effectiveApiKey starts with: ${effectiveApiKey.substring(0, 8)}, agentId: ${agentConfig.agentId}`);
+      
       // Resolve base URL for ElevenLabs (supports custom domains like elevenlabs.in)
       const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
       const baseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
@@ -920,6 +923,9 @@ export class BatchedTestExecutorService {
       const effectiveApiKey = agentConfig.apiKey || this.elevenLabsApiKey;
       const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
       const baseUrl = resolveElevenLabsBaseUrl(agentConfig.baseUrl);
+
+      console.log(`[BatchedExecutor] DEBUG Chat: agentConfig.apiKey starts with: ${agentConfig.apiKey ? agentConfig.apiKey.substring(0, 8) : 'EMPTY'}`);
+      console.log(`[BatchedExecutor] DEBUG Chat: effectiveApiKey starts with: ${effectiveApiKey.substring(0, 8)}, baseUrl: ${baseUrl}, agentId: ${agentConfig.agentId}`);
 
       // Build a simulated user prompt that covers ALL test cases in the batch
       const simulatedUserPrompt = this.buildBatchSimulatedUserPrompt(batch.testCases);
