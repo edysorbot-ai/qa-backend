@@ -280,7 +280,6 @@ router.post('/check-credits', async (req: Request, res: Response) => {
       : 10; // Default to 10 credits per test
 
     const totalCreditsNeeded = testCaseCount * creditsPerTest;
-    const availableCredits = userCredits.current_credits || 0;
 
     // If user has unlimited package, always allow
     if (userCredits.is_unlimited) {
