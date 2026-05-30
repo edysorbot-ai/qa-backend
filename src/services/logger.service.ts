@@ -296,6 +296,12 @@ export const logger = {
   admin: new Logger('admin'),
   security: new Logger('security'),
   system: new Logger('system'),
+
+  // General-purpose logging methods (delegates to system logger)
+  info: (message: string, meta?: any) => new Logger('system').info(message, meta),
+  error: (message: string, meta?: any) => new Logger('system').error(message, meta),
+  warn: (message: string, meta?: any) => new Logger('system').warn(message, meta),
+  debug: (message: string, meta?: any) => new Logger('system').debug(message, meta),
   
   // Create a logger with correlation ID for request tracing
   forRequest(correlationId: string, userId?: string): {

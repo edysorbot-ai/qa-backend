@@ -86,7 +86,7 @@ async function fetchJWKS(): Promise<any[]> {
     if (!response.ok) {
       throw new Error(`JWKS fetch failed: ${response.status}`);
     }
-    const data = await response.json();
+    const data: any = await response.json();
     jwksCache = { keys: data.keys, fetchedAt: Date.now() };
     return data.keys;
   } catch (error) {
