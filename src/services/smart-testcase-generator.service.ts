@@ -16,6 +16,7 @@ import {
   type IntelligentBatch,
   type TestCaseForBatching,
 } from './intelligent-batching.service';
+import { getSeedAdversarialTestCases } from './seed-adversarial-test-cases.service';
 
 // ============ INTERFACES ============
 
@@ -224,15 +225,42 @@ export class SmartTestCaseGeneratorService {
     // Step 3: Generate test cases organized by topics
     const testCases = await this.generateTestCasesByTopics(agentAnalysis, agentPrompt, keyTopics, maxTestCases);
     console.log(`[SmartTestCaseGenerator] Generated ${testCases.length} test cases`);
-    
+
+    // Always prepend seed adversarial / persona / security test cases
+    // (rude, interruptions, prompt-injection L1/L2/L3, harmful advice, PII, toxic).
+    const seedNow = Date.now();
+    const seeds: SmartTestCase[] = getSeedAdversarialTestCases().map((s, i) => ({
+      id: `tc-seed-${seedNow}-${i}`,
+      name: s.name,
+      scenario: s.scenario,
+      userInput: s.scenario,
+      expectedOutcome: s.expectedOutcome,
+      category: s.category,
+      keyTopicId: s.keyTopic.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+      keyTopicName: s.keyTopic,
+      priority: s.priority,
+      canBatchWith: [],
+      requiresSeparateCall: !!s.is_security_test,
+      estimatedTurns: 3,
+      testType: (s.is_security_test ? 'edge_case' : 'multi_turn') as TestType,
+      isCallClosing: false,
+      batchPosition: 'any',
+      semanticGroup: s.is_security_test ? 'error_recovery' : 'objection_handling',
+      persona_type: s.persona_type || null,
+      behavior_modifiers: s.behavior_modifiers || null,
+      is_security_test: s.is_security_test || false,
+      security_test_type: s.security_test_type || null,
+    }));
+    const allCases = [...seeds, ...testCases];
+
     // Step 4: Create optimal test plan with AI-POWERED INTELLIGENT BATCHING
     const agentFirstMessage = agentConfig.firstMessage || agentConfig.first_message || agentConfig.greeting || '';
-    const testPlan = await this.createTestPlanWithIntelligentBatching(testCases, agentPrompt, agentFirstMessage);
+    const testPlan = await this.createTestPlanWithIntelligentBatching(allCases, agentPrompt, agentFirstMessage);
     console.log(`[SmartTestCaseGenerator] Created AI-optimized test plan with ${testPlan.totalCalls} calls`);
     
     return {
       agentAnalysis,
-      testCases,
+      testCases: allCases,
       testPlan,
     };
   }

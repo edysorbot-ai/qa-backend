@@ -5,6 +5,7 @@
 
 import OpenAI from 'openai';
 import { config } from '../config';
+import { getSeedAdversarialTestCases } from './seed-adversarial-test-cases.service';
 
 interface AgentAnalysis {
   purpose: string;
@@ -64,9 +65,26 @@ export class TestCaseGeneratorService {
     // Then, generate test cases based on analysis
     const testCases = await this.generateTestCases(agentAnalysis, agentPrompt, maxTestCases);
 
+    // Always seed adversarial / persona / security cases (rude, interruptions,
+    // prompt-injection L1/L2/L3, harmful advice, PII exposure, toxic content).
+    const seedNow = Date.now();
+    const seeds = getSeedAdversarialTestCases().map((s, i) => ({
+      id: `tc-seed-${seedNow}-${i}`,
+      name: s.name,
+      scenario: s.scenario,
+      category: s.category,
+      keyTopic: s.keyTopic,
+      expectedOutcome: s.expectedOutcome,
+      priority: s.priority,
+      persona_type: s.persona_type,
+      behavior_modifiers: s.behavior_modifiers,
+      is_security_test: s.is_security_test,
+      security_test_type: s.security_test_type,
+    } as any));
+
     return {
       agentAnalysis,
-      testCases,
+      testCases: [...seeds, ...testCases],
     };
   }
 

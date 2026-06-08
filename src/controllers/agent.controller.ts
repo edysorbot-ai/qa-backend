@@ -336,6 +336,11 @@ export class AgentController {
           key_topic: tc.keyTopic || tc.key_topic || tc.category || 'General',
           priority: tc.priority || 'medium',
           batch_compatible: true,
+          // Persona + security fields (forwarded from seed adversarial cases)
+          persona_type: tc.persona_type || undefined,
+          behavior_modifiers: tc.behavior_modifiers || undefined,
+          is_security_test: tc.is_security_test || false,
+          security_test_type: tc.security_test_type || undefined,
         }))
       );
 

@@ -330,6 +330,11 @@ export class IntegrationService {
       testType: tc.testType,
       canBatchWith: tc.canBatchWith,
       estimatedTurns: tc.estimatedTurns,
+      // Persona + security fields forwarded so frontend save calls preserve them
+      persona_type: tc.persona_type || null,
+      behavior_modifiers: tc.behavior_modifiers || null,
+      is_security_test: tc.is_security_test || false,
+      security_test_type: tc.security_test_type || null,
     }));
 
     return {
