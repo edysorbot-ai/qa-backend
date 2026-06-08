@@ -3565,6 +3565,19 @@ Generate Alex's natural response:`;
     const transcriptText = transcript
       .map((t, i) => `[Turn ${i}] ${t.role.toUpperCase()}: ${perTurnRedactions[i].redacted}`)
       .join('\n');
+    // Response-segregation: same lines grouped per speaker so the evaluator
+    // can reason about each side independently. Turn indices match the
+    // interleaved transcriptText so all citations stay valid.
+    const userOnlyText = transcript
+      .map((t, i) => ({ t, i }))
+      .filter(({ t }) => t.role === 'test_caller')
+      .map(({ i }) => `[Turn ${i}] ${perTurnRedactions[i].redacted}`)
+      .join('\n') || '(no user turns)';
+    const agentOnlyText = transcript
+      .map((t, i) => ({ t, i }))
+      .filter(({ t }) => t.role === 'ai_agent')
+      .map(({ i }) => `[Turn ${i}] ${perTurnRedactions[i].redacted}`)
+      .join('\n') || '(no agent turns)';
     // Aggregate reverse map across all turns.
     const reverseMap = new Map<string, string>();
     perTurnRedactions.forEach(r => r.reverse.forEach((v, k) => reverseMap.set(k, v)));
@@ -3674,6 +3687,12 @@ Return JSON:
 
     const userPrompt = `TRANSCRIPT:
 ${transcriptText}
+
+USER TURNS ONLY (response segregation — caller side):
+${userOnlyText}
+
+AGENT TURNS ONLY (response segregation — agent side):
+${agentOnlyText}
 
 TEST CASES TO EVALUATE:
 ${testCaseContext}

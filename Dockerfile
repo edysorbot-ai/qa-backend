@@ -15,6 +15,10 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# ffmpeg is used by audio-segmentation.service to split mixed recordings
+# into per-speaker tracks (user.wav / agent.wav) for evaluation.
+RUN apk add --no-cache ffmpeg
+
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 

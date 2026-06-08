@@ -100,6 +100,12 @@ app.get('/api/docs.json', (req, res) => {
 // Supports both ulaw raw files (Twilio) and MP3 files (custom agents)
 import * as fs from 'fs';
 import * as path from 'path';
+import pool from './db';
+import {
+  segmentSpeaker,
+  turnsToDiarization,
+  type Speaker,
+} from './services/audio-segmentation.service';
 
 const recordingsDir = path.join(__dirname, '../recordings');
 
@@ -148,6 +154,89 @@ app.get('/api/audio/:filename', (req, res) => {
   } catch (error) {
     logger.api.error('Error serving audio:', { error: error instanceof Error ? error.message : 'Unknown', filename: req.params.filename });
     res.status(500).json({ error: 'Failed to serve audio file' });
+  }
+});
+
+// Per-speaker audio (response segregation)
+//   GET /api/audio/:filename/:speaker   speaker ∈ user | agent | full
+// `full` is identical to /api/audio/:filename and exists so the frontend
+// can use one URL pattern. user/agent variants mute the opposite speaker's
+// time windows (looked up from test_results.conversation_turns) using ffmpeg.
+app.get('/api/audio/:filename/:speaker', async (req, res) => {
+  try {
+    const { filename, speaker } = req.params;
+    if (!['user', 'agent', 'full'].includes(speaker)) {
+      return res.status(400).json({ error: 'speaker must be user|agent|full' });
+    }
+    const sanitizedFilename = path.basename(filename);
+    const inputPath = path.join(recordingsDir, sanitizedFilename);
+    if (!fs.existsSync(inputPath)) {
+      return res.status(404).json({ error: 'Audio file not found' });
+    }
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    if (speaker === 'full') {
+      const audioData = fs.readFileSync(inputPath);
+      const isMP3 = audioData.length > 3 && (
+        (audioData[0] === 0xFF && (audioData[1] & 0xE0) === 0xE0) ||
+        (audioData[0] === 0x49 && audioData[1] === 0x44 && audioData[2] === 0x33)
+      );
+      if (isMP3) {
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Content-Length', audioData.length);
+        return res.send(audioData);
+      }
+      const wavBuffer = createWavFromUlaw(audioData);
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Length', wavBuffer.length);
+      return res.send(wavBuffer);
+    }
+
+    // Look up turn timestamps by matching the audio_url suffix.
+    const audioUrlSuffix = `/${sanitizedFilename}`;
+    const turnsQuery = await pool.query(
+      `SELECT conversation_turns, duration_ms
+         FROM test_results
+        WHERE agent_audio_url LIKE $1
+           OR user_audio_url  LIKE $1
+        ORDER BY completed_at DESC NULLS LAST
+        LIMIT 1`,
+      [`%${audioUrlSuffix}`],
+    );
+    if (turnsQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'No transcript turns found for this recording' });
+    }
+    const row = turnsQuery.rows[0];
+    const turns = Array.isArray(row.conversation_turns) ? row.conversation_turns : [];
+    const diarization = turnsToDiarization(turns, row.duration_ms);
+    if (diarization.length === 0) {
+      return res.status(422).json({
+        error: 'Recording has no per-turn timestamps; cannot split by speaker',
+      });
+    }
+    const cacheKey = sanitizedFilename.replace(/\.(raw|wav|mp3|m4a|ogg)$/i, '');
+    const { outputPath } = await segmentSpeaker(
+      inputPath,
+      diarization,
+      speaker as Speaker,
+      recordingsDir,
+      cacheKey,
+    );
+    const buf = fs.readFileSync(outputPath);
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Content-Length', buf.length);
+    res.setHeader('Content-Disposition', `inline; filename="${cacheKey}.${speaker}.wav"`);
+    res.send(buf);
+  } catch (error: any) {
+    logger.api.error('Error serving per-speaker audio:', {
+      error: error?.message || 'Unknown',
+      filename: req.params.filename,
+      speaker: req.params.speaker,
+    });
+    res.status(500).json({ error: error?.message || 'Failed to segment audio' });
   }
 });
 
