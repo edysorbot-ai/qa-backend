@@ -127,6 +127,7 @@ export class BatchedTestExecutorService {
   private elevenLabsApiKey: string;
   private currentAgentPrompt: string = '';
   private falsePositivePatterns: Array<{ test_case_scenario: string; actual_response: string; reason: string }> = [];
+  private falseNegativePatterns: Array<{ test_case_scenario: string; actual_response: string; reason: string }> = [];
 
   constructor() {
     this.openai = new OpenAI({
@@ -142,11 +143,13 @@ export class BatchedTestExecutorService {
     batch: CallBatch,
     agentConfig: { provider: string; agentId: string; apiKey: string; baseUrl?: string | null },
     agentPrompt: string,
-    falsePositivePatterns?: Array<{ test_case_scenario: string; actual_response: string; reason: string }>
+    falsePositivePatterns?: Array<{ test_case_scenario: string; actual_response: string; reason: string }>,
+    falseNegativePatterns?: Array<{ test_case_scenario: string; actual_response: string; reason: string }>
   ): Promise<BatchExecutionResult> {
     // Store agent prompt for use in test caller prompt building
     this.currentAgentPrompt = agentPrompt;
     this.falsePositivePatterns = falsePositivePatterns || [];
+    this.falseNegativePatterns = falseNegativePatterns || [];
     
     console.log(`[BatchedExecutor] Starting batch: ${batch.name}`);
     console.log(`[BatchedExecutor] Test cases: ${batch.testCases.map(tc => tc.name).join(', ')}`);
@@ -3573,9 +3576,13 @@ The test caller follows the agent's designed conversation flow (greeting → qua
 - DO NOT penalize for the conversation following a natural flow before reaching test scenarios
 - The order of test coverage may differ from the listed order — focus on whether each scenario was EVENTUALLY covered
 ${securitySection}${this.falsePositivePatterns.length > 0 ? `
-IMPORTANT - KNOWN FALSE POSITIVE PATTERNS (DO NOT mark these as failures):
-The following scenarios have been previously marked as false positives by the user. If the agent's response matches these patterns, mark the test as PASSED:
+IMPORTANT - PREVIOUSLY MARKED "FAILED-BUT-ACTUALLY-OK" PATTERNS (DO NOT mark these as failures):
+The user has reviewed prior runs and flagged the following responses as wrongly judged failures. If the agent's response is similar in nature, mark the test as PASSED:
 ${this.falsePositivePatterns.map((p, i) => `${i + 1}. Scenario: "${p.test_case_scenario}" → Response: "${p.actual_response}" — Reason: ${p.reason}`).join('\n')}
+` : ''}${this.falseNegativePatterns.length > 0 ? `
+IMPORTANT - PREVIOUSLY MARKED "PASSED-BUT-ACTUALLY-BAD" PATTERNS (DO mark these as failures):
+The user has reviewed prior runs and flagged the following responses as wrongly judged passes — they look fine on the surface but the user considers them real failures. If the agent's response is similar in nature, mark the test as FAILED and cite the matching pattern in reasoning:
+${this.falseNegativePatterns.map((p, i) => `${i + 1}. Scenario: "${p.test_case_scenario}" → Response: "${p.actual_response}" — Reason: ${p.reason}`).join('\n')}
 ` : ''}
 For each test case, evaluate:
 1. Was the scenario covered at any point in the conversation?

@@ -1997,16 +1997,27 @@ async function executeBatchedTestRun(
   
   // Load false positive patterns for this agent to tune evaluation
   let falsePositivePatterns: Array<{ test_case_scenario: string; actual_response: string; reason: string }> = [];
+  let falseNegativePatterns: Array<{ test_case_scenario: string; actual_response: string; reason: string }> = [];
   try {
     const agentIdQuery = await pool.query(
       `SELECT agent_id FROM test_runs WHERE id = $1`, [testRunId]
     );
     if (agentIdQuery.rows[0]?.agent_id) {
+      const aid = agentIdQuery.rows[0].agent_id;
       const fpQuery = await pool.query(
         `SELECT test_case_scenario, actual_response, reason FROM false_positive_patterns WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 20`,
-        [agentIdQuery.rows[0].agent_id]
+        [aid]
       );
       falsePositivePatterns = fpQuery.rows;
+      try {
+        const fnQuery = await pool.query(
+          `SELECT test_case_scenario, actual_response, reason FROM false_negative_patterns WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 20`,
+          [aid]
+        );
+        falseNegativePatterns = fnQuery.rows;
+      } catch (e) {
+        // table might not exist yet
+      }
     }
   } catch (e) {
     // Table might not exist yet - ignore
@@ -2030,7 +2041,8 @@ async function executeBatchedTestRun(
         batch,
         agentConfig,
         agentPrompt,
-        falsePositivePatterns
+        falsePositivePatterns,
+        falseNegativePatterns
       );
       
       // Store results for each test case
@@ -2183,6 +2195,66 @@ router.post('/mark-false-positive', async (req: Request, res: Response) => {
     res.json({ success: true, message: 'Marked as false positive' });
   } catch (error: any) {
     logger.error(`[FalsePositive] Error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Mark a PASSED test result as a false negative — the user disagrees with
+ * the verdict and considers this a true failure. We store the pattern so
+ * the evaluator LLM tightens its judgement for similar responses on the
+ * next test run for the same agent.
+ */
+router.post('/mark-false-negative', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { resultId, reason } = req.body;
+
+    if (!resultId) {
+      return res.status(400).json({ success: false, error: 'resultId is required' });
+    }
+
+    const resultQuery = await pool.query(
+      `SELECT tr.*, tc.agent_id, tc.scenario as tc_scenario
+       FROM test_results tr
+       LEFT JOIN test_cases tc ON tr.test_case_id = tc.id
+       WHERE tr.id = $1`,
+      [resultId]
+    );
+
+    if (resultQuery.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Test result not found' });
+    }
+
+    const result = resultQuery.rows[0];
+
+    await pool.query(
+      `UPDATE test_results SET is_false_negative = true, false_negative_reason = $1 WHERE id = $2`,
+      [reason || 'Marked by user', resultId]
+    );
+
+    if (result.agent_id) {
+      await pool.query(
+        `INSERT INTO false_negative_patterns (agent_id, user_id, test_case_scenario, actual_response, reason, pattern_context)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          result.agent_id,
+          userId,
+          result.tc_scenario || result.scenario || '',
+          result.actual_response || '',
+          reason || 'Marked by user',
+          JSON.stringify({
+            userInput: result.user_input,
+            expectedResponse: result.expected_response,
+            category: result.category,
+          }),
+        ]
+      );
+    }
+
+    res.json({ success: true, message: 'Marked as false negative' });
+  } catch (error: any) {
+    logger.error(`[FalseNegative] Error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2429,6 +2501,23 @@ router.get('/false-positive-patterns/:agentId', async (req: Request, res: Respon
     res.json({ success: true, patterns: patterns.rows });
   } catch (error: any) {
     logger.error(`[FalsePositivePatterns] Error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/false-negative-patterns/:agentId', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { agentId } = req.params;
+
+    const patterns = await pool.query(
+      `SELECT * FROM false_negative_patterns WHERE agent_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 50`,
+      [agentId, userId]
+    );
+
+    res.json({ success: true, patterns: patterns.rows });
+  } catch (error: any) {
+    logger.error(`[FalseNegativePatterns] Error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });

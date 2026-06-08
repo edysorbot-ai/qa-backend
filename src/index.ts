@@ -43,6 +43,7 @@ import { up as createToolCallSchemas } from './db/migrations/039_create_tool_cal
 import { up as addReevaluationTracking } from './db/migrations/040_add_reevaluation_tracking';
 import { up as addAgentLifecycleStage } from './db/migrations/041_add_agent_lifecycle_stage';
 import { addMonitoringSamplingControls } from './db/migrations/042_add_monitoring_sampling';
+import { up as addFalseNegativeTracking } from './db/migrations/043_add_false_negative_tracking';
 import { addTestResultColumns } from './db/migrations/add-test-result-columns';
 import { createAlertSettingsTable } from './db/migrations/create-alert-settings';
 import { createTeamMembersTable } from './db/migrations/create-team-members';
@@ -104,8 +105,7 @@ const startServer = async () => {
     await createToolCallSchemas(pool);
     await addReevaluationTracking(pool);
     await addAgentLifecycleStage(pool);
-    await addMonitoringSamplingControls(pool);
-    await addTestResultColumns();
+    await addMonitoringSamplingControls(pool);    await addFalseNegativeTracking(pool);    await addTestResultColumns();
     await createAlertSettingsTable();
     await createTeamMembersTable();
     
