@@ -41,6 +41,8 @@ import { up as createConversationFlows } from './db/migrations/037_create_conver
 import { up as createLoadTests } from './db/migrations/038_create_load_tests';
 import { up as createToolCallSchemas } from './db/migrations/039_create_tool_call_schemas';
 import { up as addReevaluationTracking } from './db/migrations/040_add_reevaluation_tracking';
+import { up as addAgentLifecycleStage } from './db/migrations/041_add_agent_lifecycle_stage';
+import { addMonitoringSamplingControls } from './db/migrations/042_add_monitoring_sampling';
 import { addTestResultColumns } from './db/migrations/add-test-result-columns';
 import { createAlertSettingsTable } from './db/migrations/create-alert-settings';
 import { createTeamMembersTable } from './db/migrations/create-team-members';
@@ -101,6 +103,8 @@ const startServer = async () => {
     await createLoadTests(pool);
     await createToolCallSchemas(pool);
     await addReevaluationTracking(pool);
+    await addAgentLifecycleStage(pool);
+    await addMonitoringSamplingControls(pool);
     await addTestResultColumns();
     await createAlertSettingsTable();
     await createTeamMembersTable();

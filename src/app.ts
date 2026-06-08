@@ -25,6 +25,8 @@ import loadTestRoutes from './routes/load-test.routes';
 import toolValidationRoutes from './routes/tool-validation.routes';
 import costAdvisorRoutes from './routes/cost-advisor.routes';
 import multiLanguageRoutes from './routes/multi-language.routes';
+import monitoringExtrasRoutes from './routes/monitoring-extras.routes';
+import telephonyRoutes from './routes/telephony.routes';
 
 const app = express();
 
@@ -549,6 +551,12 @@ app.use('/api/cost-advisor', requireAuthentication, costAdvisorRoutes);
 
 // Multi-language testing
 app.use('/api/multi-language', requireAuthentication, multiLanguageRoutes);
+
+// Monitoring extras: sampling controls, outage testing, latency RCA, analytics, feedback, escalation
+app.use('/api/monitoring', requireAuthentication, monitoringExtrasRoutes);
+
+// Telephony latency testing (Twilio probe)
+app.use('/api/telephony', requireAuthentication, telephonyRoutes);
 
 // 404 handler
 app.use(notFoundHandler);

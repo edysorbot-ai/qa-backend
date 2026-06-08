@@ -11,6 +11,23 @@ export interface ConversationTurn {
   completion_tokens?: number;
   cumulative_context_tokens?: number;
   context_growth_rate?: number; // % increase from previous turn
+  // Item 11: per-action latency breakdown (ms). Populated either from provider
+  // payloads (preferred) or by the heuristic attribution in
+  // latency-attribution.service.ts. All fields optional.
+  latency_breakdown?: {
+    sttMs?: number;
+    llmMs?: number;
+    toolMs?: number;
+    ttsMs?: number;
+    otherMs?: number;
+    // 'provider' = direct from provider webhook; 'heuristic' = estimated.
+    source?: 'provider' | 'heuristic';
+  };
+  // Item 11: tool call attribution for agent turns that invoked a tool.
+  tool_call?: {
+    name?: string;
+    durationMs?: number;
+  };
 }
 
 // Context Growth Metrics for monitoring token usage across conversation

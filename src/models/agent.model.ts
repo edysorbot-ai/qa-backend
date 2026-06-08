@@ -1,5 +1,7 @@
 import { Provider } from './integration.model';
 
+export type AgentLifecycleStage = 'development' | 'qa' | 'uat' | 'production';
+
 export interface Agent {
   id: string;
   user_id: string;
@@ -11,6 +13,8 @@ export interface Agent {
   intents: string[];
   config: Record<string, any>;
   status: 'active' | 'inactive' | 'error';
+  /** Item 17: maturity tier that gates eval policy. */
+  lifecycle_stage?: AgentLifecycleStage;
   created_at: Date;
   updated_at: Date;
 }
@@ -32,4 +36,5 @@ export interface UpdateAgentDTO {
   intents?: string[];
   config?: Record<string, any>;
   status?: 'active' | 'inactive' | 'error';
+  lifecycle_stage?: AgentLifecycleStage;
 }

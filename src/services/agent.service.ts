@@ -70,6 +70,10 @@ export class AgentService {
       fields.push(`status = $${paramCount++}`);
       values.push(data.status);
     }
+    if (data.lifecycle_stage !== undefined) {
+      fields.push(`lifecycle_stage = $${paramCount++}`);
+      values.push(data.lifecycle_stage);
+    }
 
     if (fields.length === 0) return this.findById(id);
 

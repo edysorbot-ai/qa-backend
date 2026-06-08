@@ -137,4 +137,55 @@ Return JSON: { "detected": true/false, "languages": ["lang1", "lang2"], "instanc
   }
 });
 
+/**
+ * Item 15 (pronunciation): compare a target phrase against what the agent
+ * actually said and flag potential pronunciation / spelling drift. Uses an
+ * LLM judge because phoneme libraries are heavy and we want explainable
+ * findings.
+ */
+router.post('/analyze-pronunciation', async (req: Request, res: Response) => {
+  try {
+    const { spokenText, expectedPhrases, language } = req.body || {};
+    if (!spokenText || !Array.isArray(expectedPhrases) || expectedPhrases.length === 0) {
+      return res.status(400).json({ success: false, error: 'spokenText and expectedPhrases[] are required' });
+    }
+
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    const lang = SUPPORTED_LANGUAGES.find(l => l.code === language)?.name || 'English';
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a linguistic QA judge. The agent was supposed to say (or correctly handle) the following phrases in ${lang}. The transcript captures what was actually spoken (already passed through STT, so some letters may be slightly wrong).
+
+For each expected phrase, determine:
+- found: did the phrase (or a close variant) appear in the spoken text?
+- exact_match: did it appear letter-for-letter?
+- variant: if not exact, what was actually said?
+- likely_cause: if there's drift, is it 'pronunciation_drift', 'stt_error', 'agent_paraphrased', or 'missing'?
+- severity: 'low' (cosmetic), 'medium' (understandable but inaccurate), 'high' (incorrect or misleading).
+
+Return JSON: { "findings": [...], "overallScore": 0-100 }`,
+        },
+        {
+          role: 'user',
+          content: `SPOKEN TEXT:\n${spokenText}\n\nEXPECTED PHRASES:\n${expectedPhrases.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}`,
+        },
+      ],
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+    });
+
+    const result = JSON.parse(response.choices[0]?.message?.content || '{"findings":[],"overallScore":0}');
+    res.json({ success: true, language: lang, ...result });
+  } catch (err: any) {
+    logger.error(`[MultiLang] pronunciation error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 export default router;

@@ -133,4 +133,84 @@ Return JSON:
   }
 });
 
+/**
+ * Item 21: Tool call success rate aggregation per agent / tool / time-range.
+ * Returns total, valid, invalid, success rate, recent invalid samples.
+ */
+router.get('/stats/:agentId', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { agentId } = req.params;
+    const days = Number((req.query.days as string) || '30');
+
+    const agentOwn = await pool.query(
+      `SELECT 1 FROM agents WHERE id = $1 AND user_id = $2`,
+      [agentId, userId]
+    );
+    if (agentOwn.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'agent not found' });
+    }
+
+    const overall = await pool.query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE is_valid = true)::int AS valid,
+         COUNT(*) FILTER (WHERE is_valid = false)::int AS invalid
+       FROM tool_call_validations
+       WHERE agent_id = $1
+         AND created_at >= NOW() - ($2 || ' days')::interval`,
+      [agentId, days.toString()]
+    );
+
+    const perTool = await pool.query(
+      `SELECT
+         tool_name,
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE is_valid = true)::int AS valid,
+         COUNT(*) FILTER (WHERE is_valid = false)::int AS invalid,
+         ROUND(
+           (COUNT(*) FILTER (WHERE is_valid = true))::numeric * 100.0 /
+           NULLIF(COUNT(*), 0),
+           1
+         )::float AS success_rate
+       FROM tool_call_validations
+       WHERE agent_id = $1
+         AND created_at >= NOW() - ($2 || ' days')::interval
+       GROUP BY tool_name
+       ORDER BY total DESC`,
+      [agentId, days.toString()]
+    );
+
+    const recentFailures = await pool.query(
+      `SELECT id, tool_name, parameters_sent, validation_errors, created_at
+       FROM tool_call_validations
+       WHERE agent_id = $1
+         AND is_valid = false
+         AND created_at >= NOW() - ($2 || ' days')::interval
+       ORDER BY created_at DESC
+       LIMIT 20`,
+      [agentId, days.toString()]
+    );
+
+    const o = overall.rows[0] || { total: 0, valid: 0, invalid: 0 };
+    const successRate = o.total > 0 ? Math.round((o.valid * 1000) / o.total) / 10 : null;
+
+    res.json({
+      success: true,
+      windowDays: days,
+      overall: {
+        total: o.total,
+        valid: o.valid,
+        invalid: o.invalid,
+        successRate,
+      },
+      perTool: perTool.rows,
+      recentFailures: recentFailures.rows,
+    });
+  } catch (error: any) {
+    logger.error(`[ToolValidation] Stats error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 export default router;

@@ -13,6 +13,9 @@ import goldenTestRoutes from './goldenTest.routes';
 import inferenceRoutes from './inference.routes';
 import leakageRoutes from './leakage.routes';
 import consistencyRoutes from './consistency.routes';
+import recommendationsRoutes from './recommendations.routes';
+import latencySimulationRoutes from './latency-simulation.routes';
+import voiceQualityRoutes from './voice-quality.routes';
 
 const router = Router();
 
@@ -36,5 +39,8 @@ router.use('/golden-tests', goldenTestRoutes);
 router.use('/', inferenceRoutes);  // Inference routes use various base paths
 router.use('/', leakageRoutes);  // Leakage routes use /agents/:agentId/... paths
 router.use('/', consistencyRoutes);  // Consistency routes use /agents/:agentId/... paths
+router.use('/recommendations', recommendationsRoutes);
+router.use('/latency-simulation', latencySimulationRoutes);
+router.use('/voice-quality', voiceQualityRoutes);
 
 export default router;

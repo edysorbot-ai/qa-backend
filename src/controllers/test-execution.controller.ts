@@ -25,6 +25,8 @@ import {
 import { userService } from '../services/user.service';
 import { teamMemberService } from '../services/teamMember.service';
 import { decrypt, isEncrypted } from '../services/encryption.service';
+import { TEST_CASE_TEMPLATES, fillTemplateForAgent } from '../services/test-case-templates.service';
+import { attributeLatency } from '../services/latency-attribution.service';
 
 // Create recordings directory if it doesn't exist
 const recordingsDir = path.join(__dirname, '../../recordings');
@@ -508,12 +510,28 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
         
         // Map conversation turns to expected format (text -> content)
         if (Array.isArray(conversationTurns)) {
-          conversationTurns = conversationTurns.map((turn: any) => ({
-            role: turn.role,
-            content: turn.content || turn.text || turn.message || '',
-            timestamp: turn.timestamp,
-            durationMs: turn.durationMs || turn.latencyMs,
-          }));
+          conversationTurns = conversationTurns.map((turn: any) => {
+            const durationMs = turn.durationMs || turn.latencyMs || turn.latency_ms || 0;
+            const content = turn.content || turn.text || turn.message || '';
+            // Item 11: attach a latency_breakdown if missing.
+            let breakdown = turn.latency_breakdown;
+            if (!breakdown && turn.role === 'agent' && durationMs > 0) {
+              breakdown = attributeLatency({
+                totalDurationMs: durationMs,
+                hasToolCall: !!(turn.tool_call && turn.tool_call.name),
+                textLength: (content || '').length,
+                providerBreakdown: turn.providerLatency,
+              });
+            }
+            return {
+              role: turn.role,
+              content,
+              timestamp: turn.timestamp,
+              durationMs,
+              latency_breakdown: breakdown,
+              tool_call: turn.tool_call,
+            };
+          });
         }
 
         // Parse prompt_suggestions if it's a string
@@ -2170,11 +2188,57 @@ router.post('/mark-false-positive', async (req: Request, res: Response) => {
 });
 
 /**
- * Re-evaluate a single test result with user feedback (Item 3 of Phase 1 roadmap).
- * The user disputes the AI verdict — AI re-runs the analyzer with the feedback as
- * authoritative steering and updates the row. Also records the feedback for future
- * agent tuning (same `false_positive_patterns` table when the verdict flips to PASS).
+ * Item 7 — list available pre-defined test case templates.
+ * Templates are authoritative; the LLM only fills slots.
  */
+router.get('/test-case-templates', async (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    templates: TEST_CASE_TEMPLATES.map(t => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      category: t.category,
+      is_security_test: !!t.is_security_test,
+      security_test_type: t.security_test_type,
+      persona_type: t.persona_type,
+      behavior_modifiers: t.behavior_modifiers,
+      slot_count: t.slots.length,
+    })),
+  });
+});
+
+/**
+ * Item 7 — generate a single test case from a template, optionally filling
+ * slots with agent context via LLM. The construct of the test (scenario shape,
+ * pass criterion, persona, security flag) is NEVER changed by the LLM.
+ */
+router.post('/test-case-templates/generate', async (req: Request, res: Response) => {
+  try {
+    const { templateId, agentId } = req.body as { templateId?: string; agentId?: string };
+    if (!templateId || !agentId) {
+      return res.status(400).json({ success: false, error: 'templateId and agentId are required' });
+    }
+    const template = TEST_CASE_TEMPLATES.find(t => t.id === templateId);
+    if (!template) {
+      return res.status(404).json({ success: false, error: 'Template not found' });
+    }
+    const agQ = await pool.query(
+      `SELECT id, name, system_prompt, first_message FROM agents WHERE id = $1`,
+      [agentId],
+    );
+    if (agQ.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Agent not found' });
+    }
+    const agent = agQ.rows[0];
+    const filled = await fillTemplateForAgent(template, agent.system_prompt || '', agent.first_message || '');
+    return res.json({ success: true, testCase: filled, template: { id: template.id, name: template.name } });
+  } catch (error: any) {
+    logger.error(`[Templates] Generate error: ${error.message}`);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.post('/reevaluate-result', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId;

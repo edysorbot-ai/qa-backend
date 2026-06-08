@@ -103,9 +103,14 @@ export class AgentController {
   async update(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const { name, prompt, intents, config, status } = req.body;
+      const { name, prompt, intents, config, status, lifecycle_stage } = req.body;
 
-      const agent = await agentService.update(id, { name, prompt, intents, config, status });
+      // Item 17 — validate lifecycle stage so junk values can't bypass the DB check.
+      if (lifecycle_stage !== undefined && !['development', 'qa', 'uat', 'production'].includes(lifecycle_stage)) {
+        return res.status(400).json({ error: 'lifecycle_stage must be one of: development, qa, uat, production' });
+      }
+
+      const agent = await agentService.update(id, { name, prompt, intents, config, status, lifecycle_stage });
       
       if (!agent) {
         return res.status(404).json({ error: 'Agent not found' });

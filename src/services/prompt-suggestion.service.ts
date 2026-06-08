@@ -130,6 +130,77 @@ Be specific to THIS failure. Don't give generic advice.`;
       },
     ];
   }
+
+  /**
+   * Item 30: when the underlying LLM changes (e.g. customer migrates an agent
+   * from gpt-4o to claude-3-5-sonnet or vice versa), suggest prompt
+   * readjustments. Compares the prompt's STYLE expectations against the new
+   * model's known quirks.
+   *
+   * Returns a list of bullet-style recommendations that the user can
+   * accept/reject before pushing to the provider.
+   */
+  async suggestPromptReadjustmentForLLMChange(params: {
+    currentPrompt: string;
+    fromModel: string;
+    toModel: string;
+    agentName?: string;
+    agentDomain?: string;
+  }): Promise<Array<{ section: string; issue: string; suggestion: string; severity: 'low' | 'medium' | 'high' }>> {
+    try {
+      const sys = `You are a prompt-engineering expert who specialises in cross-model prompt portability. You will be given a system prompt currently optimised for one LLM, and the target LLM the user wants to switch to. Identify concrete adjustments needed.
+
+KNOWN MODEL QUIRKS:
+- gpt-4o / gpt-4o-mini: follow numbered steps well; tolerate long preambles; respect "DO NOT" instructions reliably; sometimes verbose unless told otherwise.
+- gpt-3.5-turbo: needs SHORTER prompts; struggles with long enumerations; needs explicit examples rather than abstract rules.
+- claude-3-5-sonnet / claude-3-opus: prefer XML tags for structure; respond better to <instructions> blocks than markdown headings; tend to add caveats unless told not to.
+- claude-3-haiku: similar to sonnet but shorter context; needs the most critical rules at the TOP.
+- gemini-1.5-pro / gemini-2.0-flash: strict about JSON output; struggles with implicit role-play; needs explicit examples for tool calls.
+- llama-3 family: needs FEWER constraints — too many rules cause refusal loops. Avoid double negatives.
+- mistral-large: similar to llama but tolerates more rules; struggles with ambiguous pronouns.
+
+For each adjustment, return: {section, issue, suggestion, severity}. severity=high means the prompt will likely produce wrong behaviour on the new model without this fix.
+
+Return JSON: {"adjustments": [...]}. Limit to the top 5 most important changes.`;
+
+      const usr = `CURRENT PROMPT (optimised for ${params.fromModel}):
+${params.currentPrompt}
+
+SWITCHING TO: ${params.toModel}
+${params.agentName ? `AGENT: ${params.agentName}` : ''}
+${params.agentDomain ? `DOMAIN: ${params.agentDomain}` : ''}
+
+List the concrete prompt adjustments needed to keep the same behaviour on ${params.toModel}.`;
+
+      const response = await this.getOpenAI().chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user', content: usr },
+        ],
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        max_tokens: 1200,
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) return [];
+      const parsed = JSON.parse(content);
+      const arr = Array.isArray(parsed.adjustments) ? parsed.adjustments : [];
+      return arr
+        .filter((a: any) => a && a.suggestion)
+        .slice(0, 5)
+        .map((a: any) => ({
+          section: typeof a.section === 'string' ? a.section : 'General',
+          issue: typeof a.issue === 'string' ? a.issue : '',
+          suggestion: typeof a.suggestion === 'string' ? a.suggestion : '',
+          severity: ['low', 'medium', 'high'].includes(a.severity) ? a.severity : 'medium',
+        }));
+    } catch (err) {
+      console.error('[PromptSuggestionService] suggestPromptReadjustmentForLLMChange error', err);
+      return [];
+    }
+  }
 }
 
 export const promptSuggestionService = new PromptSuggestionService();
