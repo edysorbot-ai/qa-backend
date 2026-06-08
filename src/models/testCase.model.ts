@@ -95,6 +95,9 @@ export interface TestCase {
   is_security_test?: boolean;
   security_test_type?: SecurityTestType;
   sensitive_data_types?: string[];
+  // Gold-example governance
+  gold_gate?: 'soft' | 'strict';
+  created_via?: 'manual' | 'auto_seed' | 'ai_generated' | 'csv_import' | 'template';
   created_at: Date;
   updated_at: Date;
 }
@@ -121,6 +124,9 @@ export interface CreateTestCaseDTO {
   is_security_test?: boolean;
   security_test_type?: SecurityTestType;
   sensitive_data_types?: string[];
+  // Gold-example governance
+  gold_gate?: 'soft' | 'strict';
+  created_via?: 'manual' | 'auto_seed' | 'ai_generated' | 'csv_import' | 'template';
 }
 
 export interface UpdateTestCaseDTO {
@@ -143,4 +149,6 @@ export interface UpdateTestCaseDTO {
   is_security_test?: boolean;
   security_test_type?: SecurityTestType;
   sensitive_data_types?: string[];
+  // Gold-example governance
+  gold_gate?: 'soft' | 'strict';
 }

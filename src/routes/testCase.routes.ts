@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { testCaseController } from '../controllers/testCase.controller';
+import { goldExampleController } from '../controllers/goldExample.controller';
 import { 
   requireSubscriptionAndCredits,
   FeatureKeys 
@@ -47,5 +48,19 @@ router.put('/:id', testCaseController.update.bind(testCaseController));
 
 // DELETE /api/test-cases/:id - Delete test case
 router.delete('/:id', testCaseController.delete.bind(testCaseController));
+
+// --- Gold examples (acceptable / unacceptable reference conversations) ---
+// GET    /api/test-cases/:id/gold-examples
+// POST   /api/test-cases/:id/gold-examples/generate           body: { kind?: 'acceptable'|'unacceptable'|'both' }
+// PUT    /api/test-cases/:id/gold-examples/:kind              body: { transcript, notes? }
+// POST   /api/test-cases/:id/gold-examples/:kind/approve
+// POST   /api/test-cases/:id/gold-examples/:kind/unapprove
+// DELETE /api/test-cases/:id/gold-examples/:kind
+router.get('/:id/gold-examples', goldExampleController.list.bind(goldExampleController));
+router.post('/:id/gold-examples/generate', goldExampleController.generate.bind(goldExampleController));
+router.put('/:id/gold-examples/:kind', goldExampleController.update.bind(goldExampleController));
+router.post('/:id/gold-examples/:kind/approve', goldExampleController.approve.bind(goldExampleController));
+router.post('/:id/gold-examples/:kind/unapprove', goldExampleController.unapprove.bind(goldExampleController));
+router.delete('/:id/gold-examples/:kind', goldExampleController.remove.bind(goldExampleController));
 
 export default router;

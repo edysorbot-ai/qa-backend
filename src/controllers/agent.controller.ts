@@ -326,22 +326,29 @@ export class AgentController {
       const { testCaseService } = await import('../services/testCase.service');
       
       const savedTestCases = await testCaseService.createMany(
-        result.testCases.map((tc: any) => ({
-          agent_id: id,
-          user_id: userId,
-          name: tc.name,
-          scenario: tc.scenario,
-          expected_behavior: tc.expectedOutcome || tc.expected_behavior || '',
-          category: tc.category || 'General',
-          key_topic: tc.keyTopic || tc.key_topic || tc.category || 'General',
-          priority: tc.priority || 'medium',
-          batch_compatible: true,
-          // Persona + security fields (forwarded from seed adversarial cases)
-          persona_type: tc.persona_type || undefined,
-          behavior_modifiers: tc.behavior_modifiers || undefined,
-          is_security_test: tc.is_security_test || false,
-          security_test_type: tc.security_test_type || undefined,
-        }))
+        result.testCases.map((tc: any) => {
+          const isSeed = typeof tc.id === 'string' && tc.id.startsWith('tc-seed-');
+          return {
+            agent_id: id,
+            user_id: userId,
+            name: tc.name,
+            scenario: tc.scenario,
+            expected_behavior: tc.expectedOutcome || tc.expected_behavior || '',
+            category: tc.category || 'General',
+            key_topic: tc.keyTopic || tc.key_topic || tc.category || 'General',
+            priority: tc.priority || 'medium',
+            batch_compatible: true,
+            // Persona + security fields (forwarded from seed adversarial cases)
+            persona_type: tc.persona_type || undefined,
+            behavior_modifiers: tc.behavior_modifiers || undefined,
+            is_security_test: tc.is_security_test || false,
+            security_test_type: tc.security_test_type || undefined,
+            // Gold-example gate: auto-seed + AI-generated cases get the soft gate
+            // (they already have strong rubrics). Manual cases default to strict.
+            created_via: isSeed ? 'auto_seed' : 'ai_generated',
+            gold_gate: 'soft',
+          };
+        })
       );
 
       // Deduct credits for generated test cases

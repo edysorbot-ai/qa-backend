@@ -1498,6 +1498,51 @@ router.post('/start-batched',
     const testRunId = uuidv4();
     const testRunName = name || `Batched Test Run - ${new Date().toISOString()}`;
 
+    // ---- Gold-example gate ---------------------------------------------
+    // For any test case that is persisted (real UUID) and tagged
+    // gold_gate='strict', require BOTH acceptable + unacceptable approved
+    // gold examples before the run is allowed to start. Soft-gated cases are
+    // allowed to run with rubric-only evaluation.
+    {
+      const persistedIds: string[] = [];
+      for (const batch of batches as any[]) {
+        for (const tc of batch.testCases || []) {
+          if (typeof tc.id === 'string' && !tc.id.startsWith('tc-')) {
+            persistedIds.push(tc.id);
+          }
+        }
+      }
+      if (persistedIds.length > 0) {
+        const gateResult = await pool.query(
+          `SELECT tc.id, tc.name, COALESCE(tc.gold_gate, 'soft') AS gold_gate,
+                  COUNT(g.id) FILTER (WHERE g.status = 'approved') AS approved_count
+             FROM test_cases tc
+             LEFT JOIN test_case_gold_examples g ON g.test_case_id = tc.id
+            WHERE tc.id = ANY($1::uuid[])
+            GROUP BY tc.id, tc.name, tc.gold_gate`,
+          [persistedIds]
+        );
+        const blocked = gateResult.rows.filter(
+          (r: any) => r.gold_gate === 'strict' && Number(r.approved_count) < 2,
+        );
+        if (blocked.length > 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'GOLD_GATE_BLOCKED',
+            message:
+              `${blocked.length} test case(s) require approved gold examples before they can run. ` +
+              `Open each test case, generate and approve both acceptable + unacceptable examples, then re-run.`,
+            blockedTestCases: blocked.map((b: any) => ({
+              id: b.id,
+              name: b.name,
+              approved_count: Number(b.approved_count),
+            })),
+          });
+        }
+      }
+    }
+    // -------------------------------------------------------------------
+
     // Try to resolve internal agent ID
     let resolvedInternalAgentId = internalAgentId;
     if (!resolvedInternalAgentId && agentId) {

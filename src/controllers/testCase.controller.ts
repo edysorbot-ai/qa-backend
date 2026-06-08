@@ -147,6 +147,9 @@ export class TestCaseController {
         is_security_test,
         security_test_type,
         sensitive_data_types,
+        // Manual creation → strict gold-example gate by default
+        created_via: 'manual',
+        gold_gate: 'strict',
       });
 
       // Deduct credits after successful creation
@@ -179,6 +182,10 @@ export class TestCaseController {
       const testCasesWithUser = test_cases.map(tc => ({
         ...tc,
         user_id: effectiveUserId,
+        // Bulk-create from the UI is manual authoring → strict gate unless
+        // the caller explicitly overrides created_via / gold_gate.
+        created_via: tc.created_via || 'manual',
+        gold_gate: tc.gold_gate || (tc.created_via && tc.created_via !== 'manual' ? 'soft' : 'strict'),
       }));
 
       const created = await testCaseService.createMany(testCasesWithUser);
@@ -313,6 +320,9 @@ export class TestCaseController {
           expected_behavior: (row.expected_behavior || row.expected_outcome || '').trim() || undefined,
           category: (row.category || 'Imported').trim(),
           priority: priority as 'high' | 'medium' | 'low',
+          // CSV import counts as user-authored content → strict gate.
+          created_via: 'csv_import' as const,
+          gold_gate: 'strict' as const,
         };
       }).filter(Boolean);
 
