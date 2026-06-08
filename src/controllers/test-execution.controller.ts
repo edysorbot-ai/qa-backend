@@ -1661,30 +1661,68 @@ async function executeBatchedCalls(
       // Route to voice or chat based on testMode
       const testMode = batch.testMode || 'voice';
       logger.info(`[BatchedExecution] Batch ${batch.id} testMode: ${testMode}`);
-      
+
+      // Bulk-fetch persona + security columns for these test cases so the executor
+      // can honour rude / interruption / toxic / security personas per provider.
+      const tcIds = batch.testCases.map(tc => tc.id).filter(Boolean);
+      const personaMap = new Map<string, any>();
+      if (tcIds.length > 0) {
+        try {
+          const personaRows = await pool.query(
+            `SELECT id, persona_type, persona_traits, voice_accent, behavior_modifiers,
+                    is_security_test, security_test_type, sensitive_data_types
+             FROM test_cases WHERE id = ANY($1::uuid[])`,
+            [tcIds]
+          );
+          for (const r of personaRows.rows) {
+            personaMap.set(String(r.id), r);
+          }
+        } catch (lookupErr) {
+          // Non-fatal — IDs from the request may be ephemeral (e.g. tc-xxx). We just
+          // fall back to neutral persona in that case.
+          logger.info('[BatchedExecution] persona lookup skipped', { detail: (lookupErr as Error).message });
+        }
+      }
+
       const executionResult = await batchedTestExecutor.executeBatch(
         {
           id: batch.id,
           name: batch.name,
           testMode: testMode,  // Pass testMode for voice/chat routing
           testCaseIds: batch.testCases.map(tc => tc.id),
-          testCases: batch.testCases.map(tc => ({
-            id: tc.id,
-            name: tc.name,
-            scenario: tc.scenario,
-            userInput: tc.name,
-            expectedOutcome: tc.expectedOutcome,
-            category: tc.category,
-            keyTopicId: tc.category,
-            keyTopicName: tc.category,
-            priority: 'medium' as const,
-            canBatchWith: [],
-            requiresSeparateCall: false,
-            estimatedTurns: 4,
-            testType: 'happy_path' as const,
-            isCallClosing: false,
-            batchPosition: 'any' as const,
-          })),
+          testCases: batch.testCases.map(tc => {
+            const p = personaMap.get(String(tc.id)) || {};
+            const parseArr = (v: any): string[] => {
+              if (!v) return [];
+              if (Array.isArray(v)) return v as string[];
+              try { const parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+            };
+            return {
+              id: tc.id,
+              name: tc.name,
+              scenario: tc.scenario,
+              userInput: tc.name,
+              expectedOutcome: tc.expectedOutcome,
+              category: tc.category,
+              keyTopicId: tc.category,
+              keyTopicName: tc.category,
+              priority: 'medium' as const,
+              canBatchWith: [],
+              requiresSeparateCall: false,
+              estimatedTurns: 4,
+              testType: 'happy_path' as const,
+              isCallClosing: false,
+              batchPosition: 'any' as const,
+              // Persona + security plumbing (Item 1/2/25/28 of Phase 1 roadmap)
+              persona_type: p.persona_type ?? null,
+              persona_traits: parseArr(p.persona_traits),
+              voice_accent: p.voice_accent ?? null,
+              behavior_modifiers: parseArr(p.behavior_modifiers),
+              is_security_test: p.is_security_test ?? false,
+              security_test_type: p.security_test_type ?? null,
+              sensitive_data_types: parseArr(p.sensitive_data_types),
+            };
+          }),
           estimatedDuration: batch.testCases.length * 25,
           primaryTopic: batch.name,
           description: `Testing ${batch.testCases.length} scenarios`,
@@ -2128,6 +2166,186 @@ router.post('/mark-false-positive', async (req: Request, res: Response) => {
   } catch (error: any) {
     logger.error(`[FalsePositive] Error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Re-evaluate a single test result with user feedback (Item 3 of Phase 1 roadmap).
+ * The user disputes the AI verdict — AI re-runs the analyzer with the feedback as
+ * authoritative steering and updates the row. Also records the feedback for future
+ * agent tuning (same `false_positive_patterns` table when the verdict flips to PASS).
+ */
+router.post('/reevaluate-result', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { resultId, feedback } = req.body as { resultId?: string; feedback?: string };
+    if (!resultId) {
+      return res.status(400).json({ success: false, error: 'resultId is required' });
+    }
+    if (!feedback || feedback.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'feedback is required' });
+    }
+
+    // Load test result + agent prompt
+    const resQ = await pool.query(
+      `SELECT tr.*, tc.agent_id, tc.persona_type, tc.persona_traits, tc.voice_accent,
+              tc.behavior_modifiers, tc.is_security_test, tc.security_test_type,
+              tc.sensitive_data_types,
+              ag.system_prompt as agent_prompt
+       FROM test_results tr
+       LEFT JOIN test_cases tc ON tr.test_case_id = tc.id
+       LEFT JOIN agents ag ON tc.agent_id = ag.id
+       WHERE tr.id = $1`,
+      [resultId]
+    );
+    if (resQ.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Test result not found' });
+    }
+    const row = resQ.rows[0];
+
+    // Parse stored transcript
+    let transcript: Array<{ role: string; content: string; timestamp?: any }> = [];
+    if (row.conversation_turns) {
+      try {
+        transcript = typeof row.conversation_turns === 'string'
+          ? JSON.parse(row.conversation_turns)
+          : row.conversation_turns;
+      } catch { transcript = []; }
+    }
+    if (!Array.isArray(transcript) || transcript.length === 0) {
+      return res.status(400).json({ success: false, error: 'No stored transcript to re-evaluate' });
+    }
+
+    // Normalise to the executor's ConversationTurn shape
+    const normalisedTranscript = transcript.map(t => ({
+      role: (t.role === 'user' || t.role === 'test_caller') ? 'test_caller' as const : 'ai_agent' as const,
+      content: String(t.content || ''),
+      timestamp: typeof t.timestamp === 'number' ? t.timestamp : Date.parse(t.timestamp || new Date().toISOString()) || Date.now(),
+    }));
+
+    const parseArr = (v: any): string[] => {
+      if (!v) return [];
+      if (Array.isArray(v)) return v as string[];
+      try { const parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+    };
+
+    const previousMetrics = (typeof row.metrics === 'string') ? (() => { try { return JSON.parse(row.metrics); } catch { return {}; } })() : (row.metrics || {});
+
+    const { batchedTestExecutor } = await import('../services/batched-test-executor.service');
+    const newVerdict = await batchedTestExecutor.reevaluateSingleTestCase({
+      transcript: normalisedTranscript as any,
+      testCase: {
+        id: row.test_case_id,
+        name: row.user_input || row.scenario || 'Test',
+        scenario: row.scenario || '',
+        userInput: row.user_input || '',
+        expectedOutcome: row.expected_response || '',
+        category: row.category || 'General',
+        keyTopicId: row.category || 'general',
+        keyTopicName: row.category || 'General',
+        priority: 'medium',
+        canBatchWith: [],
+        requiresSeparateCall: false,
+        estimatedTurns: 4,
+        testType: 'happy_path',
+        isCallClosing: false,
+        batchPosition: 'any',
+        persona_type: row.persona_type ?? null,
+        persona_traits: parseArr(row.persona_traits),
+        voice_accent: row.voice_accent ?? null,
+        behavior_modifiers: parseArr(row.behavior_modifiers),
+        is_security_test: row.is_security_test ?? false,
+        security_test_type: row.security_test_type ?? null,
+        sensitive_data_types: parseArr(row.sensitive_data_types),
+      } as any,
+      agentPrompt: row.agent_prompt || '',
+      userFeedback: feedback,
+      previousVerdict: {
+        passed: row.status === 'passed',
+        score: previousMetrics.score || 0,
+        actualResponse: row.actual_response || '',
+        reasoning: previousMetrics.reasoning || '',
+      },
+    });
+
+    // Append to reevaluation_history + persist new verdict
+    const previousHistory = (typeof row.reevaluation_history === 'string')
+      ? (() => { try { return JSON.parse(row.reevaluation_history); } catch { return []; } })()
+      : (row.reevaluation_history || []);
+    const historyEntry = {
+      at: new Date().toISOString(),
+      by: userId,
+      previousPassed: row.status === 'passed',
+      newPassed: newVerdict.passed,
+      previousScore: previousMetrics.score || 0,
+      newScore: newVerdict.score,
+      feedback,
+      reasoning: (newVerdict.metrics as any)?.reasoning,
+    };
+    const newHistory = [...previousHistory, historyEntry];
+    const mergedMetrics = { ...previousMetrics, ...newVerdict.metrics, score: newVerdict.score };
+
+    await pool.query(
+      `UPDATE test_results
+       SET status = $1,
+           actual_response = $2,
+           metrics = $3,
+           user_feedback = $4,
+           feedback_at = $5,
+           reevaluation_count = COALESCE(reevaluation_count, 0) + 1,
+           reevaluation_history = $6
+       WHERE id = $7`,
+      [
+        newVerdict.passed ? 'passed' : 'failed',
+        newVerdict.actualResponse,
+        JSON.stringify(mergedMetrics),
+        feedback,
+        new Date(),
+        JSON.stringify(newHistory),
+        resultId,
+      ]
+    );
+
+    // If verdict flipped from FAIL → PASS, store as false-positive pattern so future
+    // runs of the same scenario / agent inherit the corrected eval bias.
+    if (row.status === 'failed' && newVerdict.passed && row.agent_id) {
+      try {
+        await pool.query(
+          `INSERT INTO false_positive_patterns (agent_id, user_id, test_case_scenario, actual_response, reason, pattern_context)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            row.agent_id,
+            userId,
+            row.scenario || '',
+            newVerdict.actualResponse,
+            feedback,
+            JSON.stringify({
+              userInput: row.user_input,
+              expectedResponse: row.expected_response,
+              category: row.category,
+              source: 'reevaluate-result',
+            }),
+          ]
+        );
+      } catch (insErr) {
+        logger.info('[Reevaluate] could not insert false-positive pattern', { detail: (insErr as Error).message });
+      }
+    }
+
+    return res.json({
+      success: true,
+      verdict: {
+        passed: newVerdict.passed,
+        score: newVerdict.score,
+        actualResponse: newVerdict.actualResponse,
+        reasoning: (newVerdict.metrics as any)?.reasoning,
+        verdictChanged: (newVerdict.metrics as any)?.verdictChanged === true || (row.status === 'passed') !== newVerdict.passed,
+        turnsCovered: newVerdict.turnsCovered,
+      },
+    });
+  } catch (error: any) {
+    logger.error(`[Reevaluate] Error: ${error.message}`);
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

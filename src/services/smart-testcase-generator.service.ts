@@ -45,6 +45,14 @@ export interface SmartTestCase {
   isCallClosing: boolean; // Whether this test case may cause the agent to end the call
   batchPosition: 'start' | 'middle' | 'end' | 'any'; // Preferred position in batch
   semanticGroup?: string; // Semantic grouping for meaningful batching (e.g., "user_info_collection", "eligibility_flow")
+  // Optional persona + security fields (sourced from test_cases table when available)
+  persona_type?: string | null;
+  persona_traits?: string[] | null;
+  voice_accent?: string | null;
+  behavior_modifiers?: string[] | null;
+  is_security_test?: boolean | null;
+  security_test_type?: string | null;
+  sensitive_data_types?: string[] | null;
 }
 
 export type TestType = 

@@ -19,6 +19,7 @@
 import WebSocket from 'ws';
 import OpenAI from 'openai';
 import { resolveElevenLabsBaseUrl } from '../providers/elevenlabs.provider';
+import { buildPersonaPrompt } from './persona-prompt-builder.service';
 
 // Use native fetch (Node 18+)
 declare const fetch: typeof globalThis.fetch;
@@ -30,6 +31,14 @@ interface TestCase {
   userInput: string;
   expectedOutcome: string;
   category: string;
+  // Optional persona / security fields plumbed from DB
+  persona_type?: string | null;
+  persona_traits?: string[] | null;
+  voice_accent?: string | null;
+  behavior_modifiers?: string[] | null;
+  is_security_test?: boolean | null;
+  security_test_type?: string | null;
+  sensitive_data_types?: string[] | null;
 }
 
 interface AgentConfig {
@@ -1143,6 +1152,14 @@ Respond with ONLY what you would say as the customer. No explanations or meta-co
     console.log(`  - Scenario: ${testCase.scenario}`);
     console.log(`  - UserInput: ${testCase.userInput}`);
     console.log(`  - ExpectedOutcome: ${testCase.expectedOutcome}`);
+
+    // Persona / security directives (rude, interruptions, toxic-content refusal,
+    // prompt-injection, jailbreak, PII, exfiltration, etc.) sourced from the
+    // test_cases row. Empty for neutral happy-path tests.
+    const personaResult = buildPersonaPrompt(testCase as any);
+    const personaSection = personaResult.systemFragment
+      ? `\n${personaResult.systemFragment}\n`
+      : '';
     
     // Include agent prompt context for full-flow understanding
     const agentFlowContext = this.currentAgentPrompt 
@@ -1167,7 +1184,7 @@ YOUR ROLE:
 - You are testing the AI agent by acting as a REAL CUSTOMER
 - Behave naturally like a human would on a phone call
 - Follow the test scenario to evaluate the agent's responses
-
+${personaSection}
 TEST SCENARIO:
 ${testCase.scenario}
 

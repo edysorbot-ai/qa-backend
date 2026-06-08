@@ -19,6 +19,14 @@ export interface TestCase {
   userInput: string;
   expectedResponse: string;
   category: string;
+  // Optional persona / security fields plumbed from the test_cases table
+  persona_type?: string | null;
+  persona_traits?: string[] | null;
+  voice_accent?: string | null;
+  behavior_modifiers?: string[] | null;
+  is_security_test?: boolean | null;
+  security_test_type?: string | null;
+  sensitive_data_types?: string[] | null;
 }
 
 // Test result interface
@@ -243,6 +251,14 @@ export class DirectTestExecutorService {
           userInput: testCase.userInput,
           expectedOutcome: testCase.expectedResponse,
           category: testCase.category,
+          // Pass-through persona / security fields so test caller honours them
+          persona_type: testCase.persona_type ?? null,
+          persona_traits: testCase.persona_traits ?? null,
+          voice_accent: testCase.voice_accent ?? null,
+          behavior_modifiers: testCase.behavior_modifiers ?? null,
+          is_security_test: testCase.is_security_test ?? false,
+          security_test_type: testCase.security_test_type ?? null,
+          sensitive_data_types: testCase.sensitive_data_types ?? null,
         },
         {
           provider: config.agentConfig.provider,

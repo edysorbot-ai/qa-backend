@@ -381,29 +381,62 @@ export class SchedulerService {
 
         // Execute the batch
         const testMode = batch.testMode || 'voice';
+
+        // Bulk-fetch persona/security columns for these test case IDs
+        const tcIds = batch.testCases.map((tc: any) => tc.id).filter(Boolean);
+        const personaMap = new Map<string, any>();
+        if (tcIds.length > 0) {
+          try {
+            const personaRows = await pool.query(
+              `SELECT id, persona_type, persona_traits, voice_accent, behavior_modifiers,
+                      is_security_test, security_test_type, sensitive_data_types
+               FROM test_cases WHERE id = ANY($1::uuid[])`,
+              [tcIds]
+            );
+            for (const r of personaRows.rows) personaMap.set(String(r.id), r);
+          } catch {
+            // ephemeral IDs — fall back to neutral persona
+          }
+        }
+        const parseArr = (v: any): string[] => {
+          if (!v) return [];
+          if (Array.isArray(v)) return v as string[];
+          try { const parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+        };
+
         const executionResult = await batchedTestExecutor.executeBatch(
           {
             id: batch.id,
             name: batch.name,
             testMode: testMode,
             testCaseIds: batch.testCases.map((tc: any) => tc.id),
-            testCases: batch.testCases.map((tc: any) => ({
-              id: tc.id,
-              name: tc.name,
-              scenario: tc.scenario,
-              userInput: tc.name,
-              expectedOutcome: tc.expectedOutcome,
-              category: tc.category,
-              keyTopicId: tc.category,
-              keyTopicName: tc.category,
-              priority: 'medium' as const,
-              canBatchWith: [],
-              requiresSeparateCall: false,
-              estimatedTurns: 4,
-              testType: 'happy_path' as const,
-              isCallClosing: false,
-              batchPosition: 'any' as const,
-            })),
+            testCases: batch.testCases.map((tc: any) => {
+              const p = personaMap.get(String(tc.id)) || {};
+              return {
+                id: tc.id,
+                name: tc.name,
+                scenario: tc.scenario,
+                userInput: tc.name,
+                expectedOutcome: tc.expectedOutcome,
+                category: tc.category,
+                keyTopicId: tc.category,
+                keyTopicName: tc.category,
+                priority: 'medium' as const,
+                canBatchWith: [],
+                requiresSeparateCall: false,
+                estimatedTurns: 4,
+                testType: 'happy_path' as const,
+                isCallClosing: false,
+                batchPosition: 'any' as const,
+                persona_type: p.persona_type ?? null,
+                persona_traits: parseArr(p.persona_traits),
+                voice_accent: p.voice_accent ?? null,
+                behavior_modifiers: parseArr(p.behavior_modifiers),
+                is_security_test: p.is_security_test ?? false,
+                security_test_type: p.security_test_type ?? null,
+                sensitive_data_types: parseArr(p.sensitive_data_types),
+              };
+            }),
             estimatedDuration: batch.testCases.length * 25,
             primaryTopic: batch.name,
             description: `Testing ${batch.testCases.length} scenarios`,

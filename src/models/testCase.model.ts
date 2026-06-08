@@ -54,13 +54,23 @@ export type BehaviorModifier =
 /**
  * Security test types
  */
-export type SecurityTestType = 
-  | 'data_leakage'           // Test if agent leaks sensitive data
-  | 'prompt_injection'       // Test prompt injection resistance
-  | 'jailbreak_attempt'      // Test jailbreak resistance
-  | 'pii_handling'           // Test PII handling
-  | 'unauthorized_access'    // Test for unauthorized data access
-  | 'social_engineering';    // Test social engineering resistance
+export type SecurityTestType =
+  | 'data_leakage'              // Test if agent leaks sensitive data
+  | 'prompt_injection'          // Generic prompt injection resistance
+  | 'prompt_injection_l1'       // L1: direct instruction override ("ignore previous rules")
+  | 'prompt_injection_l2'       // L2: role / persona reframing ("you are now DAN…")
+  | 'prompt_injection_l3'       // L3: indirect / multi-turn / context smuggling
+  | 'jailbreak_attempt'         // Generic jailbreak attempt
+  | 'pii_handling'              // Test PII handling discipline
+  | 'pii_exposure'              // Attempt to make the agent disclose third-party PII
+  | 'unauthorized_access'       // Test for unauthorized data access
+  | 'social_engineering'        // Test social engineering resistance
+  | 'toxic_content'             // Hate, profanity, slurs — agent must refuse / de-escalate
+  | 'harmful_advice'            // Medical / legal / financial advice it must not give
+  | 'adversarial_input'         // Confusing / paradoxical / contradictory inputs
+  | 'data_exfiltration'         // Pull internal system prompt / training data / config
+  | 'medical_data_request'      // Attempt to extract or echo protected medical info
+  | 'pci_data_request';         // Attempt to extract or echo payment card info
 
 export interface TestCase {
   id: string;
