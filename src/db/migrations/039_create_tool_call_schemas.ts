@@ -24,8 +24,8 @@ export async function up(pool: Pool): Promise<void> {
       created_at TIMESTAMP DEFAULT NOW()
     );
 
-    CREATE INDEX idx_tool_schemas_agent ON tool_call_schemas(agent_id);
-    CREATE INDEX idx_tool_validations_result ON tool_call_validations(test_result_id);
+    CREATE INDEX IF NOT EXISTS idx_tool_schemas_agent ON tool_call_schemas(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_tool_validations_result ON tool_call_validations(test_result_id);
   `);
 }
 

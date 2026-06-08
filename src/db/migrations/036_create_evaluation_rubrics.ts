@@ -13,8 +13,8 @@ export async function up(pool: Pool): Promise<void> {
       updated_at TIMESTAMP DEFAULT NOW()
     );
 
-    CREATE INDEX idx_rubrics_agent ON evaluation_rubrics(agent_id);
-    CREATE INDEX idx_rubrics_active ON evaluation_rubrics(agent_id, is_active);
+    CREATE INDEX IF NOT EXISTS idx_rubrics_agent ON evaluation_rubrics(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_rubrics_active ON evaluation_rubrics(agent_id, is_active);
   `);
 }
 

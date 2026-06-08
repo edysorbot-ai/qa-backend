@@ -13,7 +13,7 @@ export async function up(pool: Pool): Promise<void> {
       UNIQUE(agent_id)
     );
 
-    CREATE INDEX idx_ci_cd_keys_hash ON ci_cd_keys(key_hash);
+    CREATE INDEX IF NOT EXISTS idx_ci_cd_keys_hash ON ci_cd_keys(key_hash);
   `);
 }
 

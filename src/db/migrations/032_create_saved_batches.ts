@@ -13,8 +13,8 @@ export async function up(pool: Pool): Promise<void> {
       updated_at TIMESTAMP DEFAULT NOW()
     );
 
-    CREATE INDEX idx_saved_batches_agent ON saved_batches(agent_id);
-    CREATE INDEX idx_saved_batches_user ON saved_batches(user_id);
+    CREATE INDEX IF NOT EXISTS idx_saved_batches_agent ON saved_batches(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_saved_batches_user ON saved_batches(user_id);
   `);
 }
 

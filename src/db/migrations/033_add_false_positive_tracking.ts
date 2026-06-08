@@ -21,7 +21,7 @@ export async function up(pool: Pool): Promise<void> {
       created_at TIMESTAMP DEFAULT NOW()
     );
 
-    CREATE INDEX idx_false_positive_agent ON false_positive_patterns(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_false_positive_agent ON false_positive_patterns(agent_id);
   `);
 }
 

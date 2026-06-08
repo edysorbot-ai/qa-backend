@@ -24,8 +24,8 @@ export async function up(pool: Pool): Promise<void> {
       CONSTRAINT fk_agent FOREIGN KEY (agent_id) REFERENCES agents(id)
     );
 
-    CREATE INDEX idx_ab_tests_user ON ab_tests(user_id);
-    CREATE INDEX idx_ab_tests_agent ON ab_tests(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_ab_tests_user ON ab_tests(user_id);
+    CREATE INDEX IF NOT EXISTS idx_ab_tests_agent ON ab_tests(agent_id);
   `);
 }
 

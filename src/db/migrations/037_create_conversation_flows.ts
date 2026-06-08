@@ -15,7 +15,7 @@ export async function up(pool: Pool): Promise<void> {
       updated_at TIMESTAMP DEFAULT NOW()
     );
 
-    CREATE INDEX idx_flows_agent ON conversation_flows(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_flows_agent ON conversation_flows(agent_id);
 
     CREATE TABLE IF NOT EXISTS flow_compliance_results (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

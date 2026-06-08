@@ -17,7 +17,7 @@ export async function up(pool: Pool): Promise<void> {
       created_at TIMESTAMP DEFAULT NOW()
     );
 
-    CREATE INDEX idx_load_tests_agent ON load_tests(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_load_tests_agent ON load_tests(agent_id);
   `);
 }
 
