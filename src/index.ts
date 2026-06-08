@@ -45,6 +45,7 @@ import { up as addAgentLifecycleStage } from './db/migrations/041_add_agent_life
 import { addMonitoringSamplingControls } from './db/migrations/042_add_monitoring_sampling';
 import { up as addFalseNegativeTracking } from './db/migrations/043_add_false_negative_tracking';
 import { up as addGoldExamples } from './db/migrations/044_add_gold_examples';
+import { up as addReferenceLinkAndAmendments } from './db/migrations/045_add_reference_link_and_amendments';
 import { addTestResultColumns } from './db/migrations/add-test-result-columns';
 import { createAlertSettingsTable } from './db/migrations/create-alert-settings';
 import { createTeamMembersTable } from './db/migrations/create-team-members';
@@ -109,6 +110,7 @@ const startServer = async () => {
     await addMonitoringSamplingControls(pool);
     await addFalseNegativeTracking(pool);
     await addGoldExamples(pool);
+    await addReferenceLinkAndAmendments(pool);
     await addTestResultColumns();
     await createAlertSettingsTable();
     await createTeamMembersTable();

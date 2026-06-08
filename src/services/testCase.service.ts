@@ -33,9 +33,9 @@ export class TestCaseService {
         expected_behavior, key_topic, test_type, category, priority, batch_compatible,
         persona_type, persona_traits, voice_accent, behavior_modifiers,
         is_security_test, security_test_type, sensitive_data_types,
-        gold_gate, created_via
+        gold_gate, created_via, reference_link
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        RETURNING *`,
       [
         data.agent_id,
@@ -59,6 +59,7 @@ export class TestCaseService {
         JSON.stringify(data.sensitive_data_types || []),
         data.gold_gate || (data.created_via && data.created_via !== 'manual' ? 'soft' : 'strict'),
         data.created_via || 'manual',
+        data.reference_link || null,
       ]
     );
     return result.rows[0];
@@ -145,6 +146,10 @@ export class TestCaseService {
     if ((data as any).gold_gate !== undefined) {
       fields.push(`gold_gate = $${paramCount++}`);
       values.push((data as any).gold_gate);
+    }
+    if ((data as any).reference_link !== undefined) {
+      fields.push(`reference_link = $${paramCount++}`);
+      values.push((data as any).reference_link || null);
     }
 
     if (fields.length === 0) return this.findById(id);

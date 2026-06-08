@@ -98,6 +98,10 @@ export interface TestCase {
   // Gold-example governance
   gold_gate?: 'soft' | 'strict';
   created_via?: 'manual' | 'auto_seed' | 'ai_generated' | 'csv_import' | 'template';
+  // Free-text discussion / spec / reference link the author can attach to a
+  // test case so reviewers can open the context that motivated it (e.g. the
+  // rude-customer reference clip).
+  reference_link?: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -127,6 +131,7 @@ export interface CreateTestCaseDTO {
   // Gold-example governance
   gold_gate?: 'soft' | 'strict';
   created_via?: 'manual' | 'auto_seed' | 'ai_generated' | 'csv_import' | 'template';
+  reference_link?: string;
 }
 
 export interface UpdateTestCaseDTO {
@@ -151,4 +156,5 @@ export interface UpdateTestCaseDTO {
   sensitive_data_types?: string[];
   // Gold-example governance
   gold_gate?: 'soft' | 'strict';
+  reference_link?: string;
 }

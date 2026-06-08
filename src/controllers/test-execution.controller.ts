@@ -2568,6 +2568,75 @@ router.get('/false-negative-patterns/:agentId', async (req: Request, res: Respon
 });
 
 /**
+ * Propose an amendment to the AGENT's system_prompt from a failing result + user
+ * feedback, dry-run it on the failing scenario plus two recent siblings, and
+ * persist a row in `agent_prompt_amendments`. Returns the proposal and
+ * verification runs so the UI can show before/after and let the user decide
+ * whether to apply it to the live agent.
+ */
+router.post('/amend-test-agent', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { resultId, feedback } = req.body as { resultId?: string; feedback?: string };
+    if (!resultId) return res.status(400).json({ success: false, error: 'resultId is required' });
+    if (!feedback || !feedback.trim()) {
+      return res.status(400).json({ success: false, error: 'feedback is required' });
+    }
+    const { proposeAgentPromptAmendment } = await import('../services/agent-prompt-amendment.service');
+    const result = await proposeAgentPromptAmendment({
+      resultId,
+      feedback: feedback.trim(),
+      userId,
+    });
+    return res.json({ success: true, amendment: result });
+  } catch (error: any) {
+    logger.error(`[AmendTestAgent] ${error.message}`);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Apply a previously proposed/verified amendment to the agent's
+ * system_prompt. Until this is called, the live agent is unchanged.
+ */
+router.post('/amend-test-agent/:amendmentId/apply', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { amendmentId } = req.params;
+    const { applyAgentPromptAmendment } = await import('../services/agent-prompt-amendment.service');
+    const out = await applyAgentPromptAmendment({ amendmentId, userId });
+    return res.json({ success: true, ...out });
+  } catch (error: any) {
+    logger.error(`[AmendTestAgent.apply] ${error.message}`);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/amend-test-agent/:amendmentId/reject', async (req: Request, res: Response) => {
+  try {
+    const { amendmentId } = req.params;
+    const { rejectAgentPromptAmendment } = await import('../services/agent-prompt-amendment.service');
+    await rejectAgentPromptAmendment(amendmentId);
+    return res.json({ success: true });
+  } catch (error: any) {
+    logger.error(`[AmendTestAgent.reject] ${error.message}`);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/agent-prompt-amendments/:agentId', async (req: Request, res: Response) => {
+  try {
+    const { agentId } = req.params;
+    const { listAmendmentsForAgent } = await import('../services/agent-prompt-amendment.service');
+    const amendments = await listAmendmentsForAgent(agentId);
+    return res.json({ success: true, amendments });
+  } catch (error: any) {
+    logger.error(`[AmendTestAgent.list] ${error.message}`);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * Save batches for an agent (persist for reuse)
  */
 router.post('/save-batches', async (req: Request, res: Response) => {

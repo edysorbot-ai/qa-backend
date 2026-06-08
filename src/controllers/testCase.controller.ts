@@ -116,6 +116,7 @@ export class TestCaseController {
         is_security_test,
         security_test_type,
         sensitive_data_types,
+        reference_link,
       } = req.body;
 
       if (!agent_id || !name || !scenario) {
@@ -147,6 +148,7 @@ export class TestCaseController {
         is_security_test,
         security_test_type,
         sensitive_data_types,
+        reference_link,
         // Manual creation → strict gold-example gate by default
         created_via: 'manual',
         gold_gate: 'strict',
@@ -206,12 +208,29 @@ export class TestCaseController {
   async update(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const { name, scenario } = req.body;
+      const { name, scenario, expected_behavior, description, key_topic,
+        category, priority, persona_type, persona_traits, voice_accent,
+        behavior_modifiers, is_security_test, security_test_type,
+        sensitive_data_types, gold_gate, reference_link } = req.body;
 
       const testCase = await testCaseService.update(id, {
         name,
         scenario,
-      });
+        expected_behavior,
+        description,
+        key_topic,
+        category,
+        priority,
+        persona_type,
+        persona_traits,
+        voice_accent,
+        behavior_modifiers,
+        is_security_test,
+        security_test_type,
+        sensitive_data_types,
+        gold_gate,
+        reference_link,
+      } as any);
       
       if (!testCase) {
         return res.status(404).json({ error: 'Test case not found' });
