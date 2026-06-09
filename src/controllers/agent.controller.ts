@@ -371,6 +371,127 @@ export class AgentController {
   }
 
   /**
+   * Generate test cases using the deterministic archetype catalog.
+   * Layer 1 (categories, scoring, persona) is fixed in code; Layer 2 (slot
+   * values) is filled by the LLM. Same request/response shape as
+   * generateTestCases so the frontend treats both paths identically.
+   *
+   * Body: { archetypeIds?: string[], preview?: boolean }
+   *  - archetypeIds: optional subset. If omitted/empty, uses full catalog.
+   *  - preview: if true, returns generated cases WITHOUT saving (mirrors
+   *    the existing AI-generation preview behavior).
+   */
+  async generateTestCasesFromArchetypes(req: Request, res: Response, _next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const { archetypeIds, preview = false } = req.body || {};
+      const clerkUser = (req as any).auth;
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      const userId = user.id;
+
+      const agent = await agentService.findById(id);
+      if (!agent) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
+
+      const { archetypeTestCaseGeneratorService } = await import(
+        '../services/archetype-testcase-generator.service'
+      );
+
+      const result = await archetypeTestCaseGeneratorService.generateFromArchetypes(
+        agent.name,
+        agent.prompt || '',
+        Array.isArray(archetypeIds) ? archetypeIds : undefined,
+      );
+
+      if (preview) {
+        const previewTestCases = result.testCases.map((tc, index) => ({
+          id: `preview-arch-${index}-${Date.now()}`,
+          archetype_id: tc.archetype_id,
+          name: tc.name,
+          scenario: tc.scenario,
+          expected_behavior: tc.expectedOutcome,
+          expectedOutcome: tc.expectedOutcome,
+          category: tc.category,
+          key_topic: tc.keyTopic,
+          priority: tc.priority,
+          persona_type: tc.persona_type,
+          is_security_test: tc.is_security_test,
+        }));
+        return res.json({
+          archetypesUsed: result.archetypesUsed,
+          testCases: previewTestCases,
+          preview: true,
+          mode: 'archetype',
+        });
+      }
+
+      const { testCaseService } = await import('../services/testCase.service');
+      const savedTestCases = await testCaseService.createMany(
+        result.testCases.map((tc) => ({
+          agent_id: id,
+          user_id: userId,
+          name: tc.name,
+          scenario: tc.scenario,
+          expected_behavior: tc.expectedOutcome,
+          category: tc.category,
+          key_topic: tc.keyTopic,
+          priority: tc.priority,
+          batch_compatible: true,
+          persona_type: (tc.persona_type as any) || undefined,
+          behavior_modifiers: (tc.behavior_modifiers as any) || undefined,
+          is_security_test: tc.is_security_test || false,
+          security_test_type: (tc.security_test_type as any) || undefined,
+          // Archetype-generated cases are deterministic-skeleton + LLM-filled,
+          // so they inherit the soft gold gate (same as ai_generated).
+          created_via: 'archetype',
+          gold_gate: 'soft',
+        })),
+      );
+
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Generated ${savedTestCases.length} archetype-based test cases for agent: ${agent.name}`,
+        { agentId: id, testCaseCount: savedTestCases.length, mode: 'archetype' },
+      );
+
+      res.json({
+        archetypesUsed: result.archetypesUsed,
+        testCases: savedTestCases,
+        mode: 'archetype',
+      });
+    } catch (error: any) {
+      logger.error(`Error generating archetype-based test cases:`, { error });
+      const errorMessage = error?.message || 'Failed to generate archetype test cases';
+      res.status(500).json({ error: errorMessage, message: errorMessage });
+    }
+  }
+
+  /**
+   * Return the static archetype catalog so the UI can show users what each
+   * "Generate from Archetypes" run will produce, and optionally let them
+   * deselect specific archetypes.
+   */
+  async listArchetypes(_req: Request, res: Response, _next: NextFunction) {
+    try {
+      const { TEST_ARCHETYPES } = await import('../data/test-archetypes');
+      res.json({
+        archetypes: TEST_ARCHETYPES.map((a) => ({
+          id: a.id,
+          label: a.label,
+          category: a.category,
+          key_topic: a.key_topic,
+          priority: a.priority,
+          persona_type: a.persona_type,
+          is_security_test: !!a.is_security_test,
+        })),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || 'Failed to list archetypes' });
+    }
+  }
+
+  /**
    * Get test cases for an agent
    */
   async getTestCases(req: Request, res: Response, next: NextFunction) {
@@ -419,6 +540,15 @@ export class AgentController {
           key_topic: tc.keyTopic || tc.key_topic || tc.category || 'General',
           priority: tc.priority || 'medium',
           batch_compatible: true,
+          // Honor created_via / gold_gate when forwarded by callers (e.g. the
+          // archetype preview flow stamps 'archetype'). Defaults preserve the
+          // pre-existing behavior for manual saves.
+          created_via: tc.created_via || undefined,
+          gold_gate: tc.gold_gate || undefined,
+          persona_type: tc.persona_type || undefined,
+          behavior_modifiers: tc.behavior_modifiers || undefined,
+          is_security_test: tc.is_security_test || false,
+          security_test_type: tc.security_test_type || undefined,
         }))
       );
 

@@ -45,6 +45,21 @@ router.post('/:id/generate-test-cases',
   agentController.generateTestCases.bind(agentController)
 );
 
+// GET /api/agents/test-archetypes - List the static archetype catalog
+// (mounted under /:id namespace for consistency with the other catalog-style
+// lookups; archetypes are global so :id is ignored).
+router.get('/:id/test-archetypes', agentController.listArchetypes.bind(agentController));
+
+// POST /api/agents/:id/generate-test-cases-from-archetypes -
+// Layer-1 deterministic skeletons + Layer-2 LLM slot filling.
+router.post('/:id/generate-test-cases-from-archetypes',
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_CASE_CREATE, (req) => {
+    const ids = req.body?.archetypeIds;
+    return Array.isArray(ids) && ids.length > 0 ? ids.length : 12;
+  }),
+  agentController.generateTestCasesFromArchetypes.bind(agentController)
+);
+
 // POST /api/agents/:id/analyze-prompt - Analyze agent's prompt using AI (requires credits)
 router.post('/:id/analyze-prompt', 
   ...requireSubscriptionAndCredits(FeatureKeys.PROMPT_ANALYZE),

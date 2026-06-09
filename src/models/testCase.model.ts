@@ -97,7 +97,7 @@ export interface TestCase {
   sensitive_data_types?: string[];
   // Gold-example governance
   gold_gate?: 'soft' | 'strict';
-  created_via?: 'manual' | 'auto_seed' | 'ai_generated' | 'csv_import' | 'template';
+  created_via?: 'manual' | 'auto_seed' | 'ai_generated' | 'csv_import' | 'template' | 'archetype';
   // Free-text discussion / spec / reference link the author can attach to a
   // test case so reviewers can open the context that motivated it (e.g. the
   // rude-customer reference clip).
@@ -130,7 +130,7 @@ export interface CreateTestCaseDTO {
   sensitive_data_types?: string[];
   // Gold-example governance
   gold_gate?: 'soft' | 'strict';
-  created_via?: 'manual' | 'auto_seed' | 'ai_generated' | 'csv_import' | 'template';
+  created_via?: 'manual' | 'auto_seed' | 'ai_generated' | 'csv_import' | 'template' | 'archetype';
   reference_link?: string;
 }
 
