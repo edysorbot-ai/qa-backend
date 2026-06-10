@@ -26,7 +26,7 @@ import { userService } from '../services/user.service';
 import { teamMemberService } from '../services/teamMember.service';
 import { decrypt, isEncrypted } from '../services/encryption.service';
 import { TEST_CASE_TEMPLATES, fillTemplateForAgent } from '../services/test-case-templates.service';
-import { attributeLatency } from '../services/latency-attribution.service';
+import { attributeLatency, aggregateLatencyAttribution } from '../services/latency-attribution.service';
 import { evaluateLifecycleGateForRun } from '../services/lifecycle-gating.service';
 
 // Create recordings directory if it doesn't exist
@@ -665,14 +665,58 @@ router.get('/result/:testResultId', async (req: Request, res: Response) => {
       }
     }
     
-    // Map conversation turns to expected format (text -> content)
+    // Map conversation turns to expected format (text -> content) and attach a
+    // per-action latency breakdown for agent turns (Item 11 / response latency).
     if (Array.isArray(conversationTurns)) {
-      conversationTurns = conversationTurns.map((turn: any) => ({
-        role: turn.role,
-        content: turn.content || turn.text || turn.message || '',
-        timestamp: turn.timestamp,
-        durationMs: turn.durationMs || turn.latencyMs,
-      }));
+      conversationTurns = conversationTurns.map((turn: any) => {
+        const durationMs = turn.durationMs || turn.latencyMs || turn.latency_ms || 0;
+        const content = turn.content || turn.text || turn.message || '';
+        let breakdown = turn.latency_breakdown;
+        if (!breakdown && turn.role === 'agent' && durationMs > 0) {
+          breakdown = attributeLatency({
+            totalDurationMs: durationMs,
+            hasToolCall: !!(turn.tool_call && turn.tool_call.name),
+            textLength: (content || '').length,
+            providerBreakdown: turn.providerLatency,
+          });
+        }
+        return {
+          role: turn.role,
+          content,
+          timestamp: turn.timestamp,
+          durationMs,
+          latency_breakdown: breakdown,
+          tool_call: turn.tool_call,
+        };
+      });
+    }
+
+    // Response latency = time from when the caller stops speaking until the agent
+    // starts responding. Measurable only for voice turns (we store it as the
+    // agent turn durationMs). Surface a per-turn + aggregate summary.
+    let responseLatency: any = null;
+    if (Array.isArray(conversationTurns)) {
+      const agentTurns = conversationTurns.filter(
+        (t: any) => t.role === 'agent' && typeof t.durationMs === 'number' && t.durationMs > 0,
+      );
+      if (agentTurns.length > 0) {
+        const perTurn = agentTurns.map((t: any, i: number) => ({
+          turn: i + 1,
+          responseLatencyMs: t.durationMs,
+          breakdown: t.latency_breakdown || null,
+        }));
+        const values = perTurn.map((p: any) => p.responseLatencyMs);
+        const sum = values.reduce((a: number, b: number) => a + b, 0);
+        const agg = aggregateLatencyAttribution(conversationTurns);
+        responseLatency = {
+          avgMs: Math.round(sum / values.length),
+          maxMs: Math.max(...values),
+          minMs: Math.min(...values),
+          perTurn,
+          totals: agg.totals,
+          source: agg.providerSourceShare >= 0.5 ? 'provider' : 'heuristic',
+        };
+      }
     }
 
     let metrics = r.metrics;
@@ -729,6 +773,7 @@ router.get('/result/:testResultId', async (req: Request, res: Response) => {
         durationMs: durationMs,
         durationFormatted: durationFormatted,
         latencyMs: r.latency_ms,
+        responseLatency: responseLatency,
         startedAt: r.started_at,
         completedAt: r.completed_at,
         

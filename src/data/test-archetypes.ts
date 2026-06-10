@@ -222,6 +222,113 @@ export const TEST_ARCHETYPES: ArchetypeDefinition[] = [
       'Agent acknowledges the time pressure, skips optional steps for {{topic_noun}}, asks only for required fields, and either completes quickly or offers a callback / SMS continuation.',
     required_slots: ['topic_noun'],
   },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // VOICE & LANGUAGE archetypes — these carry voice-only categories/topics so
+  // the intelligent batcher routes them into the VOICE batch (recordings +
+  // response-latency attribution). They are NOT separate pages — they appear
+  // as categories inside the agent's Test Cases generation.
+  // ─────────────────────────────────────────────────────────────────────────
+  {
+    id: 'tts_pronunciation_clarity',
+    label: 'TTS clarity on proper nouns',
+    category: 'Voice Quality',
+    key_topic: 'TTS Clarity',
+    priority: 'medium',
+    persona_type: 'neutral',
+    behavior_modifiers: ['voice_only', 'tts'],
+    scenario_template:
+      'The {{topic_noun}} flow requires the agent to speak back a proper noun, street name, or product name (e.g. "{{valid_value_example}}"). Tests that the synthesized voice pronounces it clearly and intelligibly over the phone.',
+    expected_behavior_template:
+      'Agent pronounces the proper noun / {{topic_noun}} value clearly and at an understandable pace, spelling it out if it is unusual, so the caller can confirm it without confusion.',
+    required_slots: ['topic_noun', 'valid_value_example'],
+  },
+  {
+    id: 'asr_accented_speech',
+    label: 'ASR with strong accent',
+    category: 'Speech Recognition',
+    key_topic: 'ASR Accuracy',
+    priority: 'high',
+    persona_type: 'unclear',
+    behavior_modifiers: ['voice_only', 'asr', 'unclear_speech'],
+    scenario_template:
+      'A caller with a strong regional accent provides a key value during the {{topic_noun}} flow. The ASR transcript may contain plausible mis-hearings of "{{valid_value_example}}".',
+    expected_behavior_template:
+      'Agent confirms the recognized value back to the caller before acting on it, and re-prompts or asks the caller to spell it if confidence is low. Agent does NOT silently proceed on a likely mis-recognized value.',
+    required_slots: ['topic_noun', 'valid_value_example'],
+  },
+  {
+    id: 'code_switching_multilingual',
+    label: 'Multilingual code-switching',
+    category: 'Multilingual',
+    key_topic: 'Language Switching',
+    priority: 'medium',
+    persona_type: 'neutral',
+    behavior_modifiers: ['voice_only', 'asr', 'multilingual'],
+    scenario_template:
+      'Mid-conversation, the caller switches languages or mixes two languages in one sentence while doing {{topic_noun}} (e.g. starts in English, switches to another language for "{{mid_flow_user_turn}}").',
+    expected_behavior_template:
+      'Agent either continues in the caller\'s preferred language if supported, or politely states which language it can continue in, without breaking the {{topic_noun}} flow or producing garbled mixed-language output.',
+    required_slots: ['topic_noun', 'mid_flow_user_turn'],
+  },
+  {
+    id: 'number_date_readback_voice',
+    label: 'Number / date read-back over voice',
+    category: 'Voice Quality',
+    key_topic: 'Number Read-back',
+    priority: 'high',
+    persona_type: 'neutral',
+    behavior_modifiers: ['voice_only', 'tts'],
+    scenario_template:
+      'During the {{topic_noun}} flow the agent must read back a phone number, reference code, or date/time to confirm it with the caller.',
+    expected_behavior_template:
+      'Agent reads digits/dates back grouped and at a clear pace (e.g. "double-four, two, one"), pauses for confirmation, and corrects on caller pushback. It does NOT rattle the value off in one fast unintelligible string.',
+    required_slots: ['topic_noun'],
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // KNOWLEDGE / RAG archetypes — exercise knowledge-base grounding & source
+  // attribution. They surface as a "Knowledge Base" category in Test Cases.
+  // ─────────────────────────────────────────────────────────────────────────
+  {
+    id: 'kb_factual_lookup',
+    label: 'Knowledge-base factual lookup',
+    category: 'Knowledge Base',
+    key_topic: 'Factual Accuracy',
+    priority: 'high',
+    persona_type: 'curious',
+    scenario_template:
+      'Caller asks a factual question about {{topic_noun}} that should be answerable from the agent\'s knowledge base: "{{distractor_question}}".',
+    expected_behavior_template:
+      'Agent answers accurately and concisely using only knowledge-base content for {{topic_noun}}, and (where applicable) attributes the source. It does NOT fabricate facts beyond what the knowledge base supports.',
+    required_slots: ['topic_noun', 'distractor_question'],
+  },
+  {
+    id: 'kb_out_of_knowledge',
+    label: 'Question outside knowledge base',
+    category: 'Knowledge Base',
+    key_topic: 'Knowledge Boundary',
+    priority: 'high',
+    persona_type: 'curious',
+    scenario_template:
+      'Caller asks a plausible-sounding question related to {{topic_noun}} that is NOT covered by the agent\'s knowledge base: "{{distractor_question}}".',
+    expected_behavior_template:
+      'Agent acknowledges it does not have that information rather than hallucinating an answer, and offers a next step (human handoff, callback, or where to find it). It does NOT invent a confident but unsupported answer.',
+    required_slots: ['topic_noun', 'distractor_question'],
+  },
+  {
+    id: 'kb_conflicting_sources',
+    label: 'Conflicting knowledge handling',
+    category: 'Knowledge Base',
+    key_topic: 'Source Attribution',
+    priority: 'medium',
+    persona_type: 'curious',
+    scenario_template:
+      'Caller pushes back on an answer about {{topic_noun}}, claiming they were told something different before: "{{mid_flow_user_turn}}".',
+    expected_behavior_template:
+      'Agent restates what its current knowledge base says for {{topic_noun}}, attributes it, and offers to escalate/verify rather than capitulating to the caller\'s claim or flip-flopping without basis.',
+    required_slots: ['topic_noun', 'mid_flow_user_turn'],
+  },
 ];
 
 /** Return archetype by id, or undefined. */
