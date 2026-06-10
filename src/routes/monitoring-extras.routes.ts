@@ -252,11 +252,14 @@ router.post('/escalate', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'summary and severity are required' });
     }
     const settings = await pool.query(
-      `SELECT slack_webhook_url, pagerduty_routing_key
+      `SELECT slack_webhook_url, pagerduty_routing_key, teams_webhook_url, whatsapp_webhook_url, escalation_enabled
        FROM alert_settings WHERE user_id = $1`,
       [userId],
     );
     const s = settings.rows[0] || {};
+    if (s.escalation_enabled === false) {
+      return res.json({ success: true, dispatched: [], note: 'Escalations are turned off in notification settings.' });
+    }
     const dispatched: Array<{ target: string; ok: boolean; status?: number; reason?: string }> = [];
 
     if (s.slack_webhook_url) {
@@ -272,6 +275,44 @@ router.post('/escalate', async (req: Request, res: Response) => {
         dispatched.push({ target: 'slack', ok: r.ok, status: r.status });
       } catch (e: any) {
         dispatched.push({ target: 'slack', ok: false, reason: e?.message });
+      }
+    }
+
+    if (s.teams_webhook_url) {
+      try {
+        // Microsoft Teams incoming webhook expects a MessageCard payload.
+        const r = await fetch(s.teams_webhook_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            '@type': 'MessageCard',
+            '@context': 'https://schema.org/extensions',
+            themeColor: severity === 'critical' ? 'D00000' : severity === 'error' ? 'E8A317' : '1A5253',
+            summary: `[${severity.toUpperCase()}] ${summary}`,
+            title: `[${String(severity).toUpperCase()}] ${summary}`,
+            text: details ? (typeof details === 'string' ? details : JSON.stringify(details)) : '',
+          }),
+        });
+        dispatched.push({ target: 'teams', ok: r.ok, status: r.status });
+      } catch (e: any) {
+        dispatched.push({ target: 'teams', ok: false, reason: e?.message });
+      }
+    }
+
+    if (s.whatsapp_webhook_url) {
+      try {
+        // Generic WhatsApp relay: POST { text }. Works with a Twilio/360dialog
+        // bridge or a custom forwarder that turns this into a WhatsApp message.
+        const r = await fetch(s.whatsapp_webhook_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: `[${String(severity).toUpperCase()}] ${summary}${details ? `\n${typeof details === 'string' ? details : JSON.stringify(details)}` : ''}`,
+          }),
+        });
+        dispatched.push({ target: 'whatsapp', ok: r.ok, status: r.status });
+      } catch (e: any) {
+        dispatched.push({ target: 'whatsapp', ok: false, reason: e?.message });
       }
     }
 
@@ -300,13 +341,83 @@ router.post('/escalate', async (req: Request, res: Response) => {
     if (dispatched.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'No escalation channels configured. Set slack_webhook_url or pagerduty_routing_key in alert_settings.',
+        error: 'No escalation channels configured. Set Slack, Teams, WhatsApp or PagerDuty in notification settings.',
       });
     }
 
     res.json({ success: true, dispatched });
   } catch (err: any) {
     logger.error(`[MonitoringExtras] escalate error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ===== t17: notification channel settings (on/off + webhooks) =====
+router.get('/notification-settings', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const r = await pool.query(
+      `SELECT escalation_enabled, slack_webhook_url, teams_webhook_url, whatsapp_webhook_url, pagerduty_routing_key
+       FROM alert_settings WHERE user_id = $1`,
+      [userId],
+    );
+    const s = r.rows[0] || {};
+    // Never echo full secrets back — report only whether each channel is configured.
+    res.json({
+      success: true,
+      settings: {
+        escalation_enabled: s.escalation_enabled !== false,
+        slack_configured: !!s.slack_webhook_url,
+        teams_configured: !!s.teams_webhook_url,
+        whatsapp_configured: !!s.whatsapp_webhook_url,
+        pagerduty_configured: !!s.pagerduty_routing_key,
+      },
+    });
+  } catch (err: any) {
+    logger.error(`[MonitoringExtras] get notification-settings error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put('/notification-settings', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { escalation_enabled, slack_webhook_url, teams_webhook_url, whatsapp_webhook_url, pagerduty_routing_key } = req.body || {};
+
+    // Ensure a row exists for this user.
+    await pool.query(
+      `INSERT INTO alert_settings (user_id, enabled)
+       VALUES ($1, true)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId],
+    );
+
+    const fields: string[] = [];
+    const values: any[] = [];
+    let i = 1;
+    const setField = (col: string, val: any) => {
+      if (val !== undefined) {
+        fields.push(`${col} = $${i++}`);
+        values.push(val === '' ? null : val);
+      }
+    };
+    setField('escalation_enabled', typeof escalation_enabled === 'boolean' ? escalation_enabled : undefined);
+    setField('slack_webhook_url', slack_webhook_url);
+    setField('teams_webhook_url', teams_webhook_url);
+    setField('whatsapp_webhook_url', whatsapp_webhook_url);
+    setField('pagerduty_routing_key', pagerduty_routing_key);
+
+    if (fields.length === 0) {
+      return res.status(400).json({ success: false, error: 'No settings provided' });
+    }
+    values.push(userId);
+    await pool.query(
+      `UPDATE alert_settings SET ${fields.join(', ')} WHERE user_id = $${i}`,
+      values,
+    );
+    res.json({ success: true });
+  } catch (err: any) {
+    logger.error(`[MonitoringExtras] put notification-settings error: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });

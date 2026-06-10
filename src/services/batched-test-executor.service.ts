@@ -3657,7 +3657,8 @@ For each test case, evaluate:
 
 ADDITIONAL EVALUATIONS (Items 9 & 10):
 - factualAssessment: judge ONLY agent turns referenced by this test for factual accuracy. Flag anything that sounds invented, unsupported by the agent prompt, or contradicts the agent prompt as a potential hallucination. Be conservative — do not flag opinion, greetings, polite acknowledgements, or scripted small talk. If no factual claims, leave hallucinations [] and confidence 100.
-- toneStyle: characterise the agent's tone/style in the turns covered. tone must be one of: professional, casual, formal, empathetic, abrupt, robotic. brandAlignment (0-100) = how well the tone matches what the AGENT PROMPT instructs (professional system prompt → professional tone). conciseness (0-100) = 100 means crisp/on-point, 0 means rambling/verbose.
+- sourceAttribution: for the factual claims the agent made (if any), classify where each claim most plausibly came from. Allowed sources: "agent_prompt" (the claim restates or is grounded in the AGENT PROMPT shown below), "rag_knowledge" (specific facts, figures, policies, prices, dates, or document-like details that read as retrieved from a knowledge base the agent has access to but are NOT in the prompt), "hallucination" (invented, unsupported by the prompt, or contradicting it), "external_internet" (general real-world knowledge the agent could only know from training/internet, not the prompt or a KB), or "none" (no factual claims). Set overallSource to the dominant source across claims, list perClaim as up to 8 {claim, source} objects, and give a one-line rationale. When in doubt between rag_knowledge and hallucination, prefer hallucination only if the claim contradicts the prompt or is implausible; otherwise rag_knowledge.
+- toneStyle: characterise the agent's tone/style in the turns covered. tone must be one of: professional, casual, formal, empathetic, abrupt, robotic. brandAlignment (0-100) = how well the tone matches what the AGENT PROMPT instructs (professional system prompt → professional tone). conciseness (0-100) = 100 means crisp/on-point, 0 means rambling/verbose. lengthProfile must be one of: terse, balanced, verbose. personality = a short 1-3 word descriptor of the agent's personality (e.g. "warm helper", "dry expert").
 
 IMPORTANT: Each transcript line starts with [Turn X] where X is the 0-based index. Use these EXACT indices in turnsCovered.
 
@@ -3673,7 +3674,8 @@ Return JSON:
       "reasoning": "Why it passed or failed",
       "turnsCovered": [0, 1, 2],
       "factualAssessment": { "hasFactualClaims": true, "suspectedHallucinations": ["..."], "confidence": 0-100 },
-      "toneStyle": { "tone": "professional", "brandAlignment": 0-100, "conciseness": 0-100, "notes": "..." }
+      "sourceAttribution": { "overallSource": "agent_prompt|rag_knowledge|hallucination|external_internet|none", "perClaim": [{ "claim": "...", "source": "agent_prompt|rag_knowledge|hallucination|external_internet" }], "rationale": "..." },
+      "toneStyle": { "tone": "professional", "brandAlignment": 0-100, "conciseness": 0-100, "lengthProfile": "terse|balanced|verbose", "personality": "...", "notes": "..." }
     }
   ]
 }`;
@@ -3746,12 +3748,36 @@ Analyze and return results as JSON.`;
                     r.factualAssessment.suspectedHallucinations.length > 0,
                 }
               : { hasFactualClaims: false, suspectedHallucinations: [], confidence: 100, hallucinationDetected: false },
+            // Item 9b: source-of-answer attribution (RAG / prompt / hallucination / internet)
+            sourceAttribution: (() => {
+              const allowed = ['agent_prompt', 'rag_knowledge', 'hallucination', 'external_internet', 'none'];
+              const sa = r.sourceAttribution;
+              if (!sa || typeof sa !== 'object') {
+                return { overallSource: 'none', perClaim: [], rationale: '' };
+              }
+              const overallSource = allowed.includes(sa.overallSource) ? sa.overallSource : 'none';
+              const perClaim = Array.isArray(sa.perClaim)
+                ? sa.perClaim.slice(0, 8).map((c: any) => ({
+                    claim: typeof c?.claim === 'string' ? reinjectPII(c.claim, reverseMap) : '',
+                    source: allowed.includes(c?.source) ? c.source : 'hallucination',
+                  }))
+                : [];
+              return {
+                overallSource,
+                perClaim,
+                rationale: typeof sa.rationale === 'string' ? reinjectPII(sa.rationale, reverseMap) : '',
+              };
+            })(),
             // Item 10: tone / style evaluator
             toneStyle: r.toneStyle
               ? {
                   tone: typeof r.toneStyle.tone === 'string' ? r.toneStyle.tone : 'professional',
                   brandAlignment: Math.max(0, Math.min(100, Number(r.toneStyle.brandAlignment) || 0)),
                   conciseness: Math.max(0, Math.min(100, Number(r.toneStyle.conciseness) || 0)),
+                  lengthProfile: ['terse', 'balanced', 'verbose'].includes(r.toneStyle.lengthProfile)
+                    ? r.toneStyle.lengthProfile
+                    : 'balanced',
+                  personality: typeof r.toneStyle.personality === 'string' ? r.toneStyle.personality : '',
                   notes: typeof r.toneStyle.notes === 'string' ? r.toneStyle.notes : '',
                 }
               : null,

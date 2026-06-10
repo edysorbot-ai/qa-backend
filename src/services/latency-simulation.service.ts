@@ -18,7 +18,23 @@ export interface StackProfile {
   stt: 'whisper' | 'deepgram' | 'google_stt' | 'azure_stt' | 'aws_transcribe';
   llm: 'gpt-4o' | 'gpt-4o-mini' | 'gpt-3.5-turbo' | 'claude-3-5-sonnet' | 'claude-3-haiku' | 'gemini-1.5-pro' | 'gemini-1.5-flash' | 'llama-3-70b';
   tts: 'elevenlabs' | 'polly' | 'google_tts' | 'azure_tts' | 'cartesia';
+  // t03: optional geo-residency region. Adds a typical network round-trip
+  // between the caller's region and the AI stack's hosting region.
+  region?: 'us-east' | 'us-west' | 'eu-west' | 'eu-central' | 'ap-south' | 'ap-southeast' | 'ap-northeast' | 'sa-east';
 }
+
+// t03: typical added round-trip latency (ms) per caller geo-residency region.
+// Reflects the extra network hop a far-from-datacentre caller pays per turn.
+const REGION_RTT_MS: Record<NonNullable<StackProfile['region']>, number> = {
+  'us-east': 20,
+  'us-west': 60,
+  'eu-west': 90,
+  'eu-central': 110,
+  'ap-south': 220,
+  'ap-southeast': 180,
+  'ap-northeast': 160,
+  'sa-east': 150,
+};
 
 // Published typical latencies (ms) — conservative averages.
 const STT_MS: Record<StackProfile['stt'], number> = {
@@ -73,13 +89,14 @@ export interface SimulatedTurnLatency {
   sttMs: number;
   llmMs: number;
   ttsMs: number;
+  networkMs: number;
   totalMs: number;
 }
 
 export interface SimulatedProfileReport {
   profile: StackProfile;
   perTurn: SimulatedTurnLatency[];
-  totals: { sttMs: number; llmMs: number; ttsMs: number; totalMs: number };
+  totals: { sttMs: number; llmMs: number; ttsMs: number; networkMs: number; totalMs: number };
   p50TotalMs: number;
   p95TotalMs: number;
   p99TotalMs: number;
@@ -103,13 +120,16 @@ function simulateOneTurn(text: string, profile: StackProfile): SimulatedTurnLate
   const sttMs = STT_MS[profile.stt];
   const llmMs = LLM_BASE_MS[profile.llm] + tokens * LLM_PER_TOKEN_MS[profile.llm];
   const ttsMs = TTS_BASE_MS[profile.tts] + Math.round((text || '').length * TTS_PER_CHAR_MS[profile.tts]);
+  // t03: geo-residency network round-trip applied once per turn (caller -> stack).
+  const networkMs = profile.region ? REGION_RTT_MS[profile.region] : 0;
   return {
     agentTurnIndex: -1,
     textLength: (text || '').length,
     sttMs,
     llmMs,
     ttsMs,
-    totalMs: sttMs + llmMs + ttsMs,
+    networkMs,
+    totalMs: sttMs + llmMs + ttsMs + networkMs,
   };
 }
 
@@ -167,9 +187,10 @@ export async function simulateLatencyAcrossConfigs(
         sttMs: acc.sttMs + t.sttMs,
         llmMs: acc.llmMs + t.llmMs,
         ttsMs: acc.ttsMs + t.ttsMs,
+        networkMs: acc.networkMs + t.networkMs,
         totalMs: acc.totalMs + t.totalMs,
       }),
-      { sttMs: 0, llmMs: 0, ttsMs: 0, totalMs: 0 },
+      { sttMs: 0, llmMs: 0, ttsMs: 0, networkMs: 0, totalMs: 0 },
     );
     const totals_per_turn = perTurn.map(t => t.totalMs);
     return {

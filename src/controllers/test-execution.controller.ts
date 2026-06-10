@@ -27,6 +27,7 @@ import { teamMemberService } from '../services/teamMember.service';
 import { decrypt, isEncrypted } from '../services/encryption.service';
 import { TEST_CASE_TEMPLATES, fillTemplateForAgent } from '../services/test-case-templates.service';
 import { attributeLatency } from '../services/latency-attribution.service';
+import { evaluateLifecycleGateForRun } from '../services/lifecycle-gating.service';
 
 // Create recordings directory if it doesn't exist
 const recordingsDir = path.join(__dirname, '../../recordings');
@@ -784,6 +785,16 @@ router.get('/result/:testResultId', async (req: Request, res: Response) => {
         detectedIntent: r.detected_intent,
         intentMatch: r.intent_match,
         outputMatch: r.output_match,
+
+        // Real evaluator outputs (t01/t02): factual correctness, source attribution,
+        // tone/style, PII redaction stats and sensitive-data flags as computed by the
+        // batched executor and persisted in test_results.metrics. Exposed verbatim so
+        // the UI can render real values instead of derived approximations.
+        factualAssessment: metrics?.factualAssessment || null,
+        sourceAttribution: metrics?.sourceAttribution || null,
+        toneStyle: metrics?.toneStyle || null,
+        piiRedaction: metrics?.piiRedaction || null,
+        sensitiveData: metrics?.sensitiveData || null,
         
         // AI-generated prompt suggestions for failed tests
         promptSuggestions: r.prompt_suggestions || [],
@@ -904,6 +915,21 @@ router.get('/metrics', async (req: Request, res: Response) => {
  * List all test runs
  * GET /api/test-execution/runs
  */
+/**
+ * t10 — Stage-aware lifecycle gate verdict for a completed run.
+ * GET /api/test-execution/runs/:runId/lifecycle-gate
+ */
+router.get('/runs/:runId/lifecycle-gate', async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+    const result = await evaluateLifecycleGateForRun(pool, runId);
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    const notFound = error?.message === 'Test run not found';
+    res.status(notFound ? 404 : 500).json({ success: false, error: error.message });
+  }
+});
+
 router.get('/runs', async (req: Request, res: Response) => {
   try {
     const { limit = 20, offset = 0 } = req.query;
@@ -1498,11 +1524,13 @@ router.post('/start-batched',
     const testRunId = uuidv4();
     const testRunName = name || `Batched Test Run - ${new Date().toISOString()}`;
 
-    // ---- Gold-example gate ---------------------------------------------
-    // For any test case that is persisted (real UUID) and tagged
-    // gold_gate='strict', require BOTH acceptable + unacceptable approved
-    // gold examples before the run is allowed to start. Soft-gated cases are
-    // allowed to run with rubric-only evaluation.
+    // ---- Gold-example gate (advisory, non-blocking) --------------------
+    // Gold examples ("acceptable" + "unacceptable" reference conversations)
+    // improve evaluation accuracy and, when approved, are injected into the
+    // evaluator prompt by the batched executor. They are NOT required to start
+    // a run: cases without approved examples fall back to rubric-only grading.
+    // We log which strict-gated cases are missing approved examples for
+    // visibility, but never block execution.
     {
       const persistedIds: string[] = [];
       for (const batch of batches as any[]) {
@@ -1513,30 +1541,30 @@ router.post('/start-batched',
         }
       }
       if (persistedIds.length > 0) {
-        const gateResult = await pool.query(
-          `SELECT tc.id, tc.name, COALESCE(tc.gold_gate, 'soft') AS gold_gate,
-                  COUNT(g.id) FILTER (WHERE g.status = 'approved') AS approved_count
-             FROM test_cases tc
-             LEFT JOIN test_case_gold_examples g ON g.test_case_id = tc.id
-            WHERE tc.id = ANY($1::uuid[])
-            GROUP BY tc.id, tc.name, tc.gold_gate`,
-          [persistedIds]
-        );
-        const blocked = gateResult.rows.filter(
-          (r: any) => r.gold_gate === 'strict' && Number(r.approved_count) < 2,
-        );
-        if (blocked.length > 0) {
-          return res.status(400).json({
-            success: false,
-            error: 'GOLD_GATE_BLOCKED',
-            message:
-              `${blocked.length} test case(s) require approved gold examples before they can run. ` +
-              `Open each test case, generate and approve both acceptable + unacceptable examples, then re-run.`,
-            blockedTestCases: blocked.map((b: any) => ({
-              id: b.id,
-              name: b.name,
-              approved_count: Number(b.approved_count),
-            })),
+        try {
+          const gateResult = await pool.query(
+            `SELECT tc.id, tc.name, COALESCE(tc.gold_gate, 'soft') AS gold_gate,
+                    COUNT(g.id) FILTER (WHERE g.status = 'approved') AS approved_count
+               FROM test_cases tc
+               LEFT JOIN test_case_gold_examples g ON g.test_case_id = tc.id
+              WHERE tc.id = ANY($1::uuid[])
+              GROUP BY tc.id, tc.name, tc.gold_gate`,
+            [persistedIds]
+          );
+          const missing = gateResult.rows.filter(
+            (r: any) => r.gold_gate === 'strict' && Number(r.approved_count) < 2,
+          );
+          if (missing.length > 0) {
+            logger.info(
+              `[BatchedExecution] ${missing.length} test case(s) have no approved gold examples; ` +
+              `running with rubric-only evaluation`,
+              { testCases: missing.map((b: any) => b.name) },
+            );
+          }
+        } catch (gateErr) {
+          // Never let the advisory gold-example check block a run.
+          logger.info('[BatchedExecution] gold-example advisory check skipped', {
+            detail: (gateErr as Error).message,
           });
         }
       }
