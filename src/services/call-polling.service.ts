@@ -466,13 +466,18 @@ class CallPollingService {
         return result;
       }
 
-      // Get last polled timestamp for this agent
+      // Get last polled timestamp for this agent. Always reach back at least
+      // 7 days so a one-off failed poll (which still advanced last_polled_at)
+      // cannot permanently hide older calls.
       const sessionResult = await pool.query(
         `SELECT last_polled_at FROM monitoring_sessions WHERE agent_id = $1`,
         [agentId]
       );
       const lastPolledAt = sessionResult.rows[0]?.last_polled_at;
-      const sinceTimestamp = lastPolledAt ? new Date(lastPolledAt).getTime() : undefined;
+      const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+      const lookbackFloor = Date.now() - SEVEN_DAYS_MS;
+      const lastTs = lastPolledAt ? new Date(lastPolledAt).getTime() : undefined;
+      const sinceTimestamp = lastTs ? Math.min(lastTs, lookbackFloor) : undefined;
 
       // Fetch calls based on provider
       let providerCalls: ProviderCall[] = [];
