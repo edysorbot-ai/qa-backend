@@ -1914,7 +1914,28 @@ async function executeBatchedCalls(
       // Update ALL test cases in this batch
       for (const tc of batch.testCases) {
         const result = resultMap.get(tc.name);
-        
+
+        // Detect "test agent failed to inject scenario" — when the evaluator
+        // says the scenario was never raised in the conversation, that's our
+        // test caller's fault, not the production agent's. Mark as
+        // 'inconclusive' instead of 'failed' so it doesn't count against the
+        // agent.
+        const actualLower = (result?.actualResponse || '').toLowerCase();
+        const scenarioNotCovered =
+          actualLower.includes('scenario not covered') ||
+          actualLower.includes('not covered in conversation') ||
+          actualLower.includes('not addressed in this conversation');
+        let status: string;
+        if (!result) {
+          status = 'failed';
+        } else if (result.passed) {
+          status = 'passed';
+        } else if (scenarioNotCovered) {
+          status = 'inconclusive';
+        } else {
+          status = 'failed';
+        }
+
         await pool.query(
           `UPDATE test_results 
            SET status = $1, actual_response = $2, 
@@ -1928,9 +1949,16 @@ async function executeBatchedCalls(
                prompt_suggestions = $11
            WHERE test_run_id = $12 AND user_input = $13`,
           [
-            result ? (result.passed ? 'passed' : 'failed') : 'failed',
+            status,
             result?.actualResponse || 'No analysis result',
-            JSON.stringify(result ? { ...result.metrics, score: result.score, turnsCovered: result.turnsCovered, hasRecording: !!audioUrl } : { hasRecording: !!audioUrl }),
+            JSON.stringify(result ? {
+              ...result.metrics,
+              score: result.score,
+              turnsCovered: result.turnsCovered,
+              hasRecording: !!audioUrl,
+              scenarioNotCovered,
+              testAgentFailure: scenarioNotCovered,
+            } : { hasRecording: !!audioUrl }),
             new Date(),
             Math.round(durationMs / batch.testCases.length),
             JSON.stringify(conversationTurns),
@@ -2751,6 +2779,60 @@ router.get('/saved-batches/:agentId', async (req: Request, res: Response) => {
     res.json({ success: true, savedBatches: result.rows });
   } catch (error: any) {
     logger.error(`[GetSavedBatches] Error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Update a saved batch (rename + edit batch_data, e.g. reordered calls).
+ * The frontend ships the full batch_data array (with the new call order) and
+ * we derive test_case_ids from it so the two stay consistent.
+ */
+router.put('/saved-batches/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { id } = req.params;
+    const { name, batches } = req.body;
+
+    if (!name && !batches) {
+      return res.status(400).json({ success: false, error: 'name or batches is required' });
+    }
+
+    // Build dynamic SET clause
+    const sets: string[] = [];
+    const vals: any[] = [];
+    let p = 1;
+    if (name !== undefined) {
+      sets.push(`name = $${p++}`);
+      vals.push(name);
+    }
+    if (batches !== undefined) {
+      const ids = Array.from(new Set(
+        (Array.isArray(batches) ? batches : []).flatMap((b: any) =>
+          (b.testCases || []).map((tc: any) => tc.id).filter(Boolean)
+        )
+      ));
+      sets.push(`batch_data = $${p++}`);
+      vals.push(JSON.stringify(batches));
+      sets.push(`test_case_ids = $${p++}`);
+      vals.push(ids);
+    }
+    sets.push(`updated_at = NOW()`);
+    vals.push(id, userId);
+
+    const result = await pool.query(
+      `UPDATE saved_batches SET ${sets.join(', ')}
+       WHERE id = $${p++} AND user_id = $${p++}
+       RETURNING *`,
+      vals
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Saved batch not found' });
+    }
+    res.json({ success: true, savedBatch: result.rows[0] });
+  } catch (error: any) {
+    logger.error(`[UpdateSavedBatch] Error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
