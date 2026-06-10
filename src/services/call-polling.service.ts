@@ -19,6 +19,30 @@ import { resolveElevenLabsBaseUrl } from '../providers/elevenlabs.provider';
 const RETELL_BASE_URL = 'https://api.retellai.com';
 const VAPI_BASE_URL = 'https://api.vapi.ai';
 
+// ElevenLabs data-residency hosts. Keys provisioned for a residency stack
+// cannot be used against the global host (401 "invalid_api_key"). We probe
+// these in order and persist whichever one authenticates so future calls go
+// straight to the right host.
+const ELEVENLABS_RESIDENCY_HOSTS = [
+  'https://api.us.residency.elevenlabs.io/v1',
+  'https://api.eu.residency.elevenlabs.io/v1',
+  'https://api.in.residency.elevenlabs.io/v1',
+];
+
+/**
+ * Probe ElevenLabs residency hosts with the given API key and return the
+ * first one that authenticates. Returns null if none work.
+ */
+async function discoverElevenLabsResidencyHost(apiKey: string): Promise<string | null> {
+  for (const host of ELEVENLABS_RESIDENCY_HOSTS) {
+    try {
+      const r = await fetch(`${host}/user`, { headers: { 'xi-api-key': apiKey } });
+      if (r.ok) return host;
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
 interface ProviderCall {
   provider_call_id: string;
   agent_id: string; // Provider's agent ID
@@ -89,7 +113,14 @@ class CallPollingService {
       });
 
       if (!response.ok) {
-        throw new Error(`ElevenLabs API error: ${response.status}`);
+        const body = await response.text().catch(() => '');
+        // Surface residency errors so the caller can probe & switch host.
+        if (response.status === 401 && /residency/i.test(body)) {
+          const err = new Error(`ElevenLabs residency error (401): ${body}`);
+          (err as any).residency = true;
+          throw err;
+        }
+        throw new Error(`ElevenLabs API error: ${response.status} ${body}`);
       }
 
       const data = await response.json() as { conversations?: any[] };
@@ -177,6 +208,8 @@ class CallPollingService {
       return calls;
     } catch (error) {
       console.error('[CallPolling] ElevenLabs fetch error:', error);
+      // Re-throw residency errors so the caller can probe other hosts.
+      if ((error as any)?.residency) throw error;
       return [];
     }
   }
@@ -443,9 +476,36 @@ class CallPollingService {
       let providerCalls: ProviderCall[] = [];
       
       switch (agent.provider) {
-        case 'elevenlabs':
-          providerCalls = await this.fetchElevenLabsCalls(apiKey, providerAgentId, sinceTimestamp, baseUrl);
+        case 'elevenlabs': {
+          // Try with current base_url. On residency 401, probe residency hosts
+          // and persist whichever authenticates so all subsequent provider calls
+          // use the right host. Also probe when there is no configured base_url
+          // and the first attempt returns nothing.
+          const tryFetch = async (bu?: string | null) =>
+            this.fetchElevenLabsCalls(apiKey, providerAgentId, sinceTimestamp, bu);
+
+          let residencyHit = false;
+          try {
+            providerCalls = await tryFetch(baseUrl);
+          } catch (e: any) {
+            if (!e?.residency) throw e;
+            residencyHit = true;
+            providerCalls = [];
+          }
+
+          if (residencyHit || (providerCalls.length === 0 && !baseUrl)) {
+            const discovered = await discoverElevenLabsResidencyHost(apiKey);
+            if (discovered && discovered !== baseUrl) {
+              console.log(`[CallPolling] ElevenLabs residency host detected for agent ${agentId}: ${discovered}. Persisting to integration.`);
+              await pool.query(
+                `UPDATE integrations SET base_url = $1, updated_at = NOW() WHERE id = $2`,
+                [discovered, agent.integration_id]
+              );
+              providerCalls = await this.fetchElevenLabsCalls(apiKey, providerAgentId, undefined, discovered);
+            }
+          }
           break;
+        }
         case 'retell':
           providerCalls = await this.fetchRetellCalls(apiKey, providerAgentId, sinceTimestamp);
           break;

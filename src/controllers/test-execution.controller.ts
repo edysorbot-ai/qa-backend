@@ -1010,7 +1010,9 @@ router.get('/runs', async (req: Request, res: Response) => {
         tr.id, tr.name, tr.status, tr.total_tests, tr.created_at,
         COUNT(trs.id) as completed_cases,
         COUNT(CASE WHEN trs.status = 'passed' THEN 1 END) as passed_cases,
-        COUNT(CASE WHEN trs.status = 'failed' THEN 1 END) as failed_cases
+        COUNT(CASE WHEN trs.status = 'failed' THEN 1 END) as failed_cases,
+        COUNT(CASE WHEN trs.is_security_test = TRUE THEN 1 END) as security_cases,
+        COUNT(CASE WHEN trs.is_security_test = FALSE OR trs.is_security_test IS NULL THEN 1 END) as normal_cases
       FROM test_runs tr
       LEFT JOIN test_results trs ON trs.test_run_id = tr.id
       WHERE tr.user_id = $1
@@ -1023,18 +1025,24 @@ router.get('/runs', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      runs: result.rows.map(r => ({
-        id: r.id,
-        name: r.name,
-        status: r.status,
-        createdAt: r.created_at,
-        stats: {
-          total: parseInt(r.total_tests) || 0,
-          completed: parseInt(r.completed_cases) || 0,
-          passed: parseInt(r.passed_cases) || 0,
-          failed: parseInt(r.failed_cases) || 0,
-        },
-      })),
+      runs: result.rows.map(r => {
+        const sec = parseInt(r.security_cases) || 0;
+        const normal = parseInt(r.normal_cases) || 0;
+        const isSecurityRun = sec > 0 && normal === 0;
+        return {
+          id: r.id,
+          name: r.name,
+          status: r.status,
+          createdAt: r.created_at,
+          is_security_run: isSecurityRun,
+          stats: {
+            total: parseInt(r.total_tests) || 0,
+            completed: parseInt(r.completed_cases) || 0,
+            passed: parseInt(r.passed_cases) || 0,
+            failed: parseInt(r.failed_cases) || 0,
+          },
+        };
+      }),
     });
 
   } catch (error) {
