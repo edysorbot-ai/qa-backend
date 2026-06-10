@@ -15,6 +15,7 @@ import { realtimeAnalysisService } from './realtime-analysis.service';
 import { integrationService } from './integration.service';
 import { deductCredits, FeatureKeys, getFeatureCreditCost } from '../middleware/credits.middleware';
 import { resolveElevenLabsBaseUrl } from '../providers/elevenlabs.provider';
+import { decrypt, isEncrypted } from './encryption.service';
 
 const RETELL_BASE_URL = 'https://api.retellai.com';
 const VAPI_BASE_URL = 'https://api.vapi.ai';
@@ -455,7 +456,8 @@ class CallPollingService {
 
       const agent = agentResult.rows[0];
       result.provider = agent.provider;
-      const apiKey = agent.api_key;
+      // API keys are stored encrypted (AES). Decrypt before calling provider APIs.
+      const apiKey = agent.api_key && isEncrypted(agent.api_key) ? decrypt(agent.api_key) : agent.api_key;
       const baseUrl = agent.base_url;
       const providerAgentId = agent.provider_agent_id;
 
