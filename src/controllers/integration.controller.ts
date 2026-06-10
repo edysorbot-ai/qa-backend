@@ -153,21 +153,9 @@ export class IntegrationController {
   async delete(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const clerkUser = (req as any).auth;
-      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
-      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
-
-      // Prevent deleting the last integration
-      const integrations = await integrationService.findByUserId(effectiveUserId);
-      if (integrations.length <= 1) {
-        return res.status(400).json({ 
-          error: 'Cannot delete last integration',
-          message: 'You must have at least one integration configured.' 
-        });
-      }
 
       const deleted = await integrationService.delete(id);
-      
+
       if (!deleted) {
         return res.status(404).json({ error: 'Integration not found' });
       }
