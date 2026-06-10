@@ -11,7 +11,13 @@ import { callPollingService } from '../services/call-polling.service';
 import { userService } from '../services/user.service';
 import { teamMemberService } from '../services/teamMember.service';
 import { deductCredits, FeatureKeys, getFeatureCreditCost } from '../middleware/credits.middleware';
+import { decrypt, isEncrypted } from '../services/encryption.service';
+import { analysePitchConsistency } from '../services/pitch-analysis.service';
+import { evaluateTtsQuality } from '../services/tts-asr-quality.service';
 import crypto from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 const router = Router();
 
@@ -435,7 +441,9 @@ router.get('/calls/:callId/recording', async (req: AuthenticatedRequest, res: Re
       return res.status(404).json({ error: 'Call not found' });
     }
 
-    const { provider_call_id, provider, api_key, recording_url, base_url } = result.rows[0];
+    const { provider_call_id, provider, api_key: rawKey, recording_url, base_url } = result.rows[0];
+    // API keys are stored encrypted in DB (AES). Decrypt before forwarding to providers.
+    const api_key = rawKey && isEncrypted(rawKey) ? decrypt(rawKey) : rawKey;
     console.log(`[Recording] Fetching for call ${callId}, provider: ${provider}, provider_call_id: ${provider_call_id}`);
 
     if (provider === 'elevenlabs') {
@@ -494,6 +502,97 @@ router.get('/calls/:callId/recording', async (req: AuthenticatedRequest, res: Re
   } catch (error) {
     console.error('Error fetching recording:', error);
     res.status(500).json({ error: 'Failed to fetch recording' });
+  }
+});
+
+/**
+ * Run audio-level analysis (pitch consistency + TTS naturalness) on a call's
+ * recording. Downloads the audio via the provider proxy, runs ffmpeg-based
+ * pitch analysis + transcript-based TTS heuristics, and persists the result
+ * under `analysis.audioMetrics` so subsequent loads are instant.
+ */
+router.post('/calls/:callId/analyze-audio', async (req: AuthenticatedRequest, res: Response) => {
+  const tmpFiles: string[] = [];
+  try {
+    const userId = await getEffectiveUserId(req);
+    const { callId } = req.params;
+
+    const callRes = await pool.query(
+      `SELECT pc.id, pc.provider, pc.provider_call_id, pc.recording_url, pc.duration_seconds,
+              pc.transcript_text, pc.analysis,
+              i.api_key, i.base_url
+       FROM production_calls pc
+       JOIN agents a ON pc.agent_id = a.id
+       JOIN integrations i ON a.integration_id = i.id
+       WHERE pc.id = $1 AND pc.user_id = $2`,
+      [callId, userId]
+    );
+    if (callRes.rows.length === 0) return res.status(404).json({ error: 'Call not found' });
+    const call = callRes.rows[0];
+
+    // 1) Acquire audio bytes
+    let audioBuffer: Buffer | null = null;
+    if (call.provider === 'elevenlabs') {
+      const { resolveElevenLabsBaseUrl } = await import('../providers/elevenlabs.provider');
+      const elBaseUrl = resolveElevenLabsBaseUrl(call.base_url);
+      const key = call.api_key && isEncrypted(call.api_key) ? decrypt(call.api_key) : call.api_key;
+      const r = await fetch(`${elBaseUrl}/convai/conversations/${call.provider_call_id}/audio`, {
+        headers: { 'xi-api-key': key }
+      });
+      if (!r.ok) return res.status(404).json({ error: `Recording fetch failed (${r.status})` });
+      audioBuffer = Buffer.from(await r.arrayBuffer());
+    } else if (call.recording_url) {
+      const r = await fetch(call.recording_url);
+      if (!r.ok) return res.status(404).json({ error: `Recording fetch failed (${r.status})` });
+      audioBuffer = Buffer.from(await r.arrayBuffer());
+    } else {
+      return res.status(400).json({ error: 'No recording available to analyze' });
+    }
+
+    // 2) Write to temp file for ffmpeg
+    const tmpPath = path.join(os.tmpdir(), `call-${callId}-${Date.now()}.audio`);
+    fs.writeFileSync(tmpPath, audioBuffer);
+    tmpFiles.push(tmpPath);
+
+    // 3) Run pitch consistency (best-effort; failure shouldn't kill the whole response)
+    let pitch: any = null;
+    try {
+      pitch = await analysePitchConsistency(tmpPath);
+    } catch (e: any) {
+      pitch = { error: e?.message || 'pitch analysis failed' };
+    }
+
+    // 4) TTS naturalness heuristics (transcript-driven)
+    let tts: any = null;
+    try {
+      tts = evaluateTtsQuality({
+        spokenText: call.transcript_text || '',
+        audioDurationMs: (call.duration_seconds || 0) * 1000,
+      });
+    } catch (e: any) {
+      tts = { error: e?.message || 'tts heuristics failed' };
+    }
+
+    const audioMetrics = {
+      pitch,
+      tts,
+      analyzed_at: new Date().toISOString(),
+    };
+
+    // 5) Persist into analysis JSONB so subsequent loads are instant
+    const existing = call.analysis || {};
+    const merged = { ...existing, audioMetrics };
+    await pool.query(
+      `UPDATE production_calls SET analysis = $1, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify(merged), callId]
+    );
+
+    res.json({ audioMetrics });
+  } catch (error) {
+    console.error('Error analyzing audio:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Audio analysis failed' });
+  } finally {
+    for (const f of tmpFiles) { try { fs.unlinkSync(f); } catch {} }
   }
 });
 

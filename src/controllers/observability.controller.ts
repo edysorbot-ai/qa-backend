@@ -28,7 +28,11 @@ interface TrendDataPoint {
 
 export class ObservabilityController {
   /**
-   * Get overview metrics for observability dashboard
+   * Get overview metrics for observability dashboard.
+   *
+   * Sources both `production_calls` (real synced calls) and `test_results`
+   * (test runs) so the dashboard reflects every conversation the user has
+   * visibility into, not just one side of the platform.
    */
   async getMetrics(req: Request, res: Response): Promise<void> {
     try {
@@ -37,7 +41,6 @@ export class ObservabilityController {
       const userId = await teamMemberService.getOwnerUserId(user.id);
       const { agentId, timeRange } = req.query;
       
-      // Calculate time intervals based on timeRange
       let intervalDays = 7;
       switch (timeRange) {
         case '24h': intervalDays = 1; break;
@@ -48,109 +51,88 @@ export class ObservabilityController {
 
       const currentPeriodStart = new Date();
       currentPeriodStart.setDate(currentPeriodStart.getDate() - intervalDays);
-      
       const previousPeriodStart = new Date(currentPeriodStart);
       previousPeriodStart.setDate(previousPeriodStart.getDate() - intervalDays);
 
-      // Build agent filter
-      const agentFilter = agentId && agentId !== 'all' 
-        ? 'AND tr.agent_id = $2' 
-        : '';
-      const params = agentId && agentId !== 'all' 
-        ? [userId, agentId, currentPeriodStart, previousPeriodStart]
-        : [userId, currentPeriodStart, previousPeriodStart];
+      const agentFilterPC = agentId && agentId !== 'all' ? 'AND pc.agent_id = $3' : '';
+      const agentFilterTR = agentId && agentId !== 'all' ? 'AND tr.agent_id = $3' : '';
+      const pcParams = (start: Date) => agentId && agentId !== 'all'
+        ? [userId, start, agentId]
+        : [userId, start];
 
-      // Get current period metrics from test_results
-      const currentMetricsQuery = `
-        SELECT 
-          COUNT(*) as total_calls,
-          AVG(COALESCE(
-            (tres.metrics->>'overallScore')::numeric,
-            (tres.metrics->>'score')::numeric,
-            0
-          )) as avg_score,
-          COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / 
-            NULLIF(COUNT(*)::float, 0) * 100 as success_rate,
-          AVG(COALESCE(tres.duration_ms, tres.latency_ms, 0) / 1000.0) as avg_duration,
-          COUNT(CASE WHEN tres.status = 'failed' THEN 1 END) as issues_found
-        FROM test_results tres
-        JOIN test_runs tr ON tres.test_run_id = tr.id
-        WHERE tr.user_id = $1 
-          ${agentFilter}
-          AND tres.created_at >= $${agentId && agentId !== 'all' ? 3 : 2}
+      // production_calls metrics (analysis status / overall_score / issues_found / duration_seconds)
+      const pcMetricsSql = (start: '$2', _agent?: string) => `
+        SELECT
+          COUNT(*)::int AS total_calls,
+          AVG(NULLIF(overall_score, 0))::numeric(10,2) AS avg_score,
+          COUNT(CASE WHEN status IN ('completed','done') AND (issues_found = 0 OR issues_found IS NULL) THEN 1 END)::float
+            / NULLIF(COUNT(*)::float, 0) * 100 AS success_rate,
+          AVG(COALESCE(duration_seconds, 0))::numeric(10,2) AS avg_duration,
+          COALESCE(SUM(issues_found), 0)::int AS issues_found
+        FROM production_calls pc
+        WHERE pc.user_id = $1
+          AND pc.created_at >= ${start}
+          ${agentFilterPC}
       `;
 
-      const previousMetricsQuery = `
-        SELECT 
-          COUNT(*) as total_calls,
-          AVG(COALESCE(
-            (tres.metrics->>'overallScore')::numeric,
-            (tres.metrics->>'score')::numeric,
-            0
-          )) as avg_score,
-          COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / 
-            NULLIF(COUNT(*)::float, 0) * 100 as success_rate,
-          AVG(COALESCE(tres.duration_ms, tres.latency_ms, 0) / 1000.0) as avg_duration,
-          COUNT(CASE WHEN tres.status = 'failed' THEN 1 END) as issues_found
+      // test_results metrics (legacy)
+      const trMetricsSql = (start: '$2') => `
+        SELECT
+          COUNT(*)::int AS total_calls,
+          AVG(COALESCE((tres.metrics->>'overallScore')::numeric, (tres.metrics->>'score')::numeric, 0))::numeric(10,2) AS avg_score,
+          COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / NULLIF(COUNT(*)::float, 0) * 100 AS success_rate,
+          AVG(COALESCE(tres.duration_ms, tres.latency_ms, 0) / 1000.0)::numeric(10,2) AS avg_duration,
+          COUNT(CASE WHEN tres.status = 'failed' THEN 1 END)::int AS issues_found
         FROM test_results tres
         JOIN test_runs tr ON tres.test_run_id = tr.id
-        WHERE tr.user_id = $1 
-          ${agentFilter}
-          AND tres.created_at >= $${agentId && agentId !== 'all' ? 4 : 3}
-          AND tres.created_at < $${agentId && agentId !== 'all' ? 3 : 2}
+        WHERE tr.user_id = $1
+          AND tres.created_at >= ${start}
+          ${agentFilterTR}
       `;
 
-      const [currentResult, previousResult] = await Promise.all([
-        query(currentMetricsQuery, agentId && agentId !== 'all' 
-          ? [userId, agentId, currentPeriodStart] 
-          : [userId, currentPeriodStart]),
-        query(previousMetricsQuery, agentId && agentId !== 'all'
-          ? [userId, agentId, previousPeriodStart, currentPeriodStart]
-          : [userId, previousPeriodStart, currentPeriodStart]),
+      const [pcCur, pcPrev, trCur, trPrev, alertsResult] = await Promise.all([
+        query(pcMetricsSql('$2'), pcParams(currentPeriodStart)),
+        query(pcMetricsSql('$2'), pcParams(previousPeriodStart)),
+        query(trMetricsSql('$2'), pcParams(currentPeriodStart)),
+        query(trMetricsSql('$2'), pcParams(previousPeriodStart)),
+        query(`SELECT COUNT(*) as count FROM alert_settings WHERE user_id = $1 AND is_active = true`, [userId]),
       ]);
 
-      const current = currentResult.rows[0] || {};
-      const previous = previousResult.rows[0] || {};
-
-      // Calculate percentage changes
-      const calculateChange = (current: number, previous: number): number => {
-        if (!previous || previous === 0) return current > 0 ? 100 : 0;
-        return ((current - previous) / previous) * 100;
+      // Merge production + test_results so the totals are unified.
+      const merge = (a: any, b: any) => {
+        const aT = parseInt(a.total_calls) || 0;
+        const bT = parseInt(b.total_calls) || 0;
+        const tot = aT + bT;
+        const weighted = (av: any, bv: any) =>
+          tot === 0 ? 0 : ((parseFloat(av) || 0) * aT + (parseFloat(bv) || 0) * bT) / tot;
+        return {
+          total_calls: tot,
+          avg_score: weighted(a.avg_score, b.avg_score),
+          success_rate: weighted(a.success_rate, b.success_rate),
+          avg_duration: weighted(a.avg_duration, b.avg_duration),
+          issues_found: (parseInt(a.issues_found) || 0) + (parseInt(b.issues_found) || 0),
+        };
       };
 
-      // Get alert count
-      const alertsResult = await query(
-        `SELECT COUNT(*) as count FROM alert_settings 
-         WHERE user_id = $1 AND is_active = true`,
-        [userId]
-      );
+      const current = merge(pcCur.rows[0] || {}, trCur.rows[0] || {});
+      const previous = merge(pcPrev.rows[0] || {}, trPrev.rows[0] || {});
+
+      const calculateChange = (cur: number, prev: number) => {
+        if (!prev) return cur > 0 ? 100 : 0;
+        return ((cur - prev) / prev) * 100;
+      };
 
       const metrics: ObservabilityMetrics = {
-        totalCalls: parseInt(current.total_calls) || 0,
-        totalCallsChange: calculateChange(
-          parseInt(current.total_calls) || 0, 
-          parseInt(previous.total_calls) || 0
-        ),
-        avgScore: Math.round(parseFloat(current.avg_score) || 0),
-        avgScoreChange: calculateChange(
-          parseFloat(current.avg_score) || 0,
-          parseFloat(previous.avg_score) || 0
-        ),
-        successRate: Math.round(parseFloat(current.success_rate) || 0),
-        successRateChange: calculateChange(
-          parseFloat(current.success_rate) || 0,
-          parseFloat(previous.success_rate) || 0
-        ),
-        avgDuration: Math.round(parseFloat(current.avg_duration) || 0),
-        avgDurationChange: calculateChange(
-          parseFloat(current.avg_duration) || 0,
-          parseFloat(previous.avg_duration) || 0
-        ),
-        issuesFound: parseInt(current.issues_found) || 0,
-        issuesChange: calculateChange(
-          parseInt(current.issues_found) || 0,
-          parseInt(previous.issues_found) || 0
-        ),
+        totalCalls: current.total_calls,
+        totalCallsChange: calculateChange(current.total_calls, previous.total_calls),
+        avgScore: Math.round(current.avg_score),
+        avgScoreChange: calculateChange(current.avg_score, previous.avg_score),
+        successRate: Math.round(current.success_rate),
+        successRateChange: calculateChange(current.success_rate, previous.success_rate),
+        avgDuration: Math.round(current.avg_duration),
+        avgDurationChange: calculateChange(current.avg_duration, previous.avg_duration),
+        issuesFound: current.issues_found,
+        issuesChange: calculateChange(current.issues_found, previous.issues_found),
         alertsTriggered: parseInt(alertsResult.rows[0]?.count) || 0,
       };
 
@@ -179,29 +161,46 @@ export class ObservabilityController {
         case '90d': intervalDays = 90; break;
       }
 
-      const agentFilter = agentId && agentId !== 'all' 
-        ? 'AND tr.agent_id = $2' 
-        : '';
+      const agentFilterPC = agentId && agentId !== 'all' ? 'AND pc.agent_id = $2' : '';
+      const agentFilterTR = agentId && agentId !== 'all' ? 'AND tr.agent_id = $2' : '';
 
+      // UNION daily aggregates from both production_calls and test_results.
       const trendsQuery = `
-        SELECT 
-          DATE(tres.created_at) as date,
-          AVG(COALESCE(
-            (tres.metrics->>'overallScore')::numeric,
-            (tres.metrics->>'score')::numeric,
-            0
-          )) as score,
-          COUNT(*) as calls,
-          COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / 
-            NULLIF(COUNT(*)::float, 0) * 100 as success_rate,
-          AVG(COALESCE(tres.duration_ms, tres.latency_ms, 0) / 1000.0) as avg_duration
-        FROM test_results tres
-        JOIN test_runs tr ON tres.test_run_id = tr.id
-        WHERE tr.user_id = $1 
-          ${agentFilter}
-          AND tres.created_at >= NOW() - make_interval(days => ${intervalDays})
-        GROUP BY DATE(tres.created_at)
-        ORDER BY date
+        WITH pc_daily AS (
+          SELECT DATE(pc.created_at) AS d,
+                 AVG(NULLIF(pc.overall_score,0)) AS score,
+                 COUNT(*) AS calls,
+                 COUNT(CASE WHEN pc.status IN ('completed','done') AND (pc.issues_found = 0 OR pc.issues_found IS NULL) THEN 1 END)::float
+                   / NULLIF(COUNT(*)::float,0) * 100 AS success_rate,
+                 AVG(COALESCE(pc.duration_seconds, 0)) AS avg_duration
+          FROM production_calls pc
+          WHERE pc.user_id = $1
+            ${agentFilterPC}
+            AND pc.created_at >= NOW() - make_interval(days => ${intervalDays})
+          GROUP BY DATE(pc.created_at)
+        ),
+        tr_daily AS (
+          SELECT DATE(tres.created_at) AS d,
+                 AVG(COALESCE((tres.metrics->>'overallScore')::numeric, (tres.metrics->>'score')::numeric, 0)) AS score,
+                 COUNT(*) AS calls,
+                 COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float
+                   / NULLIF(COUNT(*)::float,0) * 100 AS success_rate,
+                 AVG(COALESCE(tres.duration_ms, tres.latency_ms, 0) / 1000.0) AS avg_duration
+          FROM test_results tres
+          JOIN test_runs tr ON tres.test_run_id = tr.id
+          WHERE tr.user_id = $1
+            ${agentFilterTR}
+            AND tres.created_at >= NOW() - make_interval(days => ${intervalDays})
+          GROUP BY DATE(tres.created_at)
+        )
+        SELECT d AS date,
+               AVG(score) AS score,
+               SUM(calls)::int AS calls,
+               AVG(success_rate) AS success_rate,
+               AVG(avg_duration) AS avg_duration
+        FROM (SELECT * FROM pc_daily UNION ALL SELECT * FROM tr_daily) merged
+        GROUP BY d
+        ORDER BY d
       `;
 
       const result = await query(
@@ -300,25 +299,42 @@ export class ObservabilityController {
         case '90d': intervalDays = 90; break;
       }
 
+      // Per-agent rollup combining production_calls + test_results.
       const performanceQuery = `
-        SELECT 
-          a.id as agent_id,
-          a.name as agent_name,
-          COUNT(*) as total_calls,
-          AVG(COALESCE(
-            (tres.metrics->>'overallScore')::numeric,
-            (tres.metrics->>'score')::numeric,
-            0
-          )) as avg_score,
-          COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float / 
-            NULLIF(COUNT(*)::float, 0) * 100 as success_rate
-        FROM test_results tres
-        JOIN test_runs tr ON tres.test_run_id = tr.id
-        JOIN agents a ON tr.agent_id = a.id
-        WHERE tr.user_id = $1 
-          AND tres.created_at >= NOW() - make_interval(days => ${intervalDays})
+        WITH pc_a AS (
+          SELECT pc.agent_id,
+                 COUNT(*) AS calls,
+                 AVG(NULLIF(pc.overall_score,0)) AS score,
+                 COUNT(CASE WHEN pc.status IN ('completed','done') AND (pc.issues_found = 0 OR pc.issues_found IS NULL) THEN 1 END)::float
+                   / NULLIF(COUNT(*)::float,0) * 100 AS success_rate
+          FROM production_calls pc
+          WHERE pc.user_id = $1
+            AND pc.created_at >= NOW() - make_interval(days => ${intervalDays})
+          GROUP BY pc.agent_id
+        ),
+        tr_a AS (
+          SELECT tr.agent_id,
+                 COUNT(*) AS calls,
+                 AVG(COALESCE((tres.metrics->>'overallScore')::numeric, (tres.metrics->>'score')::numeric, 0)) AS score,
+                 COUNT(CASE WHEN tres.status = 'passed' THEN 1 END)::float
+                   / NULLIF(COUNT(*)::float,0) * 100 AS success_rate
+          FROM test_results tres
+          JOIN test_runs tr ON tres.test_run_id = tr.id
+          WHERE tr.user_id = $1
+            AND tres.created_at >= NOW() - make_interval(days => ${intervalDays})
+          GROUP BY tr.agent_id
+        ),
+        merged AS (
+          SELECT * FROM pc_a UNION ALL SELECT * FROM tr_a
+        )
+        SELECT a.id AS agent_id, a.name AS agent_name,
+               SUM(m.calls)::int AS total_calls,
+               AVG(m.score) AS avg_score,
+               AVG(m.success_rate) AS success_rate
+        FROM merged m
+        JOIN agents a ON a.id = m.agent_id
         GROUP BY a.id, a.name
-        ORDER BY avg_score DESC
+        ORDER BY avg_score DESC NULLS LAST
       `;
 
       const result = await query(performanceQuery, [userId]);
