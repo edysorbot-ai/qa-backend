@@ -324,6 +324,51 @@ Return ONLY valid JSON, no other text.`;
   }
 
   /**
+   * Deterministic voice-only detector.
+   *
+   * Some test cases can ONLY be meaningfully evaluated over voice (with a real
+   * recording) — e.g. ASR/speech-recognition accuracy, TTS/pronunciation
+   * clarity, accents, multilingual/code-switching, response latency, silence,
+   * background noise, interruption / barge-in. For these the AI batcher's
+   * cost-optimization bias toward "chat" would drop the recording (and thus the
+   * response-latency analysis). This helper forces such cases into the VOICE
+   * batch regardless of the LLM's recommendation, keying off the category /
+   * name / key topic that the archetype catalog assigns.
+   */
+  private detectVoiceOnly(tc: TestCaseForBatching): { voice: boolean; reason: string } {
+    const haystack = [tc.category, tc.keyTopic, tc.name]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const voiceSignals = [
+      'voice quality',
+      'speech recognition',
+      'asr',
+      'tts',
+      'pronunciation',
+      'accent',
+      'multilingual',
+      'code-switch',
+      'code switch',
+      'latency',
+      'silence',
+      'background noise',
+      'noise',
+      'interruption',
+      'barge-in',
+      'barge in',
+      'readback',
+      'read-back',
+      'pitch',
+      'prosody',
+    ];
+    const hit = voiceSignals.find((s) => haystack.includes(s));
+    return hit
+      ? { voice: true, reason: `Voice-only feature detected (${hit}) — must be tested over voice for recording + latency` }
+      : { voice: false, reason: '' };
+  }
+
+  /**
    * Step 2: Analyze each test case in context of the agent's prompt
    * Processes in chunks for large test case sets
    */
@@ -471,12 +516,18 @@ Return ONLY valid JSON, no other text.`;
       
       // Ensure all test cases have analysis
       return testCases.map(tc => {
+        const voiceOnly = this.detectVoiceOnly(tc);
         const analysis = analyses.find((a: any) => a.id === tc.id);
         if (analysis) {
           // Respect explicit test mode from test case
           if (tc.testMode && tc.testMode !== 'auto') {
             analysis.recommendedTestMode = tc.testMode;
             analysis.testModeReason = `Explicitly set to ${tc.testMode} in test case configuration`;
+          }
+          // Deterministic voice-only override (beats the LLM's chat bias)
+          if (voiceOnly.voice && tc.testMode !== 'chat') {
+            analysis.recommendedTestMode = 'voice';
+            analysis.testModeReason = voiceOnly.reason;
           }
           return {
             ...analysis,
@@ -486,6 +537,7 @@ Return ONLY valid JSON, no other text.`;
           } as TestCaseAnalysis;
         }
         // Default analysis if not found
+        const defaultVoice = voiceOnly.voice && tc.testMode !== 'chat';
         return {
           id: tc.id,
           name: tc.name,
@@ -500,32 +552,40 @@ Return ONLY valid JSON, no other text.`;
           incompatibleWith: [],
           naturalOrderScore: 5,
           failurePaths: [],
-          recommendedTestMode: tc.testMode === 'voice' ? 'voice' : 'chat',
-          testModeReason: tc.testMode === 'voice' ? 'Explicitly set to voice' : 'Default to chat for cost optimization',
+          recommendedTestMode: (defaultVoice || tc.testMode === 'voice') ? 'voice' : 'chat',
+          testModeReason: defaultVoice
+            ? voiceOnly.reason
+            : tc.testMode === 'voice' ? 'Explicitly set to voice' : 'Default to chat for cost optimization',
           voiceOnlyFeatures: [],
         };
       });
     } catch (error) {
       console.error('[IntelligentBatching] Error analyzing test cases:', error);
       // Return default analyses
-      return testCases.map(tc => ({
-        id: tc.id,
-        name: tc.name,
-        testType: 'information_gathering' as const,
-        topicsTested: [tc.category || tc.keyTopic || 'General'],
-        requiresPriorContext: false,
-        canBeFirst: true,
-        mustBeLast: false,
-        likelyToEndCall: false,
-        callEndingProbability: 10,
-        compatibleWith: [],
-        incompatibleWith: [],
-        naturalOrderScore: 5,
-        failurePaths: [],
-        recommendedTestMode: tc.testMode === 'voice' ? 'voice' as const : 'chat' as const,
-        testModeReason: tc.testMode === 'voice' ? 'Explicitly set to voice' : 'Default to chat for cost optimization',
-        voiceOnlyFeatures: [],
-      }));
+      return testCases.map(tc => {
+        const voiceOnly = this.detectVoiceOnly(tc);
+        const isVoice = (voiceOnly.voice && tc.testMode !== 'chat') || tc.testMode === 'voice';
+        return {
+          id: tc.id,
+          name: tc.name,
+          testType: 'information_gathering' as const,
+          topicsTested: [tc.category || tc.keyTopic || 'General'],
+          requiresPriorContext: false,
+          canBeFirst: true,
+          mustBeLast: false,
+          likelyToEndCall: false,
+          callEndingProbability: 10,
+          compatibleWith: [],
+          incompatibleWith: [],
+          naturalOrderScore: 5,
+          failurePaths: [],
+          recommendedTestMode: isVoice ? 'voice' as const : 'chat' as const,
+          testModeReason: voiceOnly.voice
+            ? voiceOnly.reason
+            : tc.testMode === 'voice' ? 'Explicitly set to voice' : 'Default to chat for cost optimization',
+          voiceOnlyFeatures: [],
+        };
+      });
     }
   }
 

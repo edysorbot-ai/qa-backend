@@ -313,6 +313,8 @@ export class AgentController {
           category: tc.category || 'General',
           key_topic: tc.keyTopic || tc.key_topic || tc.category || 'General',
           priority: tc.priority || 'medium',
+          is_security_test: tc.is_security_test || tc.category === 'Security' || false,
+          security_test_type: tc.security_test_type || undefined,
         }));
 
         return res.json({
@@ -416,7 +418,8 @@ export class AgentController {
           key_topic: tc.keyTopic,
           priority: tc.priority,
           persona_type: tc.persona_type,
-          is_security_test: tc.is_security_test,
+          is_security_test: tc.is_security_test || tc.category === 'Security' || false,
+          security_test_type: tc.security_test_type,
         }));
         return res.json({
           archetypesUsed: result.archetypesUsed,
