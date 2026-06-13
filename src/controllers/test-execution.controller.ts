@@ -1011,10 +1011,11 @@ router.get('/runs', async (req: Request, res: Response) => {
         COUNT(trs.id) as completed_cases,
         COUNT(CASE WHEN trs.status = 'passed' THEN 1 END) as passed_cases,
         COUNT(CASE WHEN trs.status = 'failed' THEN 1 END) as failed_cases,
-        COUNT(CASE WHEN trs.is_security_test = TRUE THEN 1 END) as security_cases,
-        COUNT(CASE WHEN trs.is_security_test = FALSE OR trs.is_security_test IS NULL THEN 1 END) as normal_cases
+        COUNT(CASE WHEN tc.is_security_test = TRUE THEN 1 END) as security_cases,
+        COUNT(CASE WHEN trs.id IS NOT NULL AND (tc.is_security_test = FALSE OR tc.is_security_test IS NULL) THEN 1 END) as normal_cases
       FROM test_runs tr
       LEFT JOIN test_results trs ON trs.test_run_id = tr.id
+      LEFT JOIN test_cases tc ON tc.id = trs.test_case_id
       WHERE tr.user_id = $1
       GROUP BY tr.id 
       ORDER BY tr.created_at DESC 
@@ -2450,14 +2451,15 @@ router.post('/test-case-templates/generate', async (req: Request, res: Response)
       return res.status(404).json({ success: false, error: 'Template not found' });
     }
     const agQ = await pool.query(
-      `SELECT id, name, system_prompt, first_message FROM agents WHERE id = $1`,
+      `SELECT id, name, prompt, first_message, config FROM agents WHERE id = $1`,
       [agentId],
     );
     if (agQ.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Agent not found' });
     }
     const agent = agQ.rows[0];
-    const filled = await fillTemplateForAgent(template, agent.system_prompt || '', agent.first_message || '');
+    const sp = agent.prompt || agent.config?.systemPrompt || agent.config?.system_prompt || '';
+    const filled = await fillTemplateForAgent(template, sp, agent.first_message || '');
     return res.json({ success: true, testCase: filled, template: { id: template.id, name: template.name } });
   } catch (error: any) {
     logger.error(`[Templates] Generate error: ${error.message}`);
@@ -2481,7 +2483,7 @@ router.post('/reevaluate-result', async (req: Request, res: Response) => {
       `SELECT tr.*, tc.agent_id, tc.persona_type, tc.persona_traits, tc.voice_accent,
               tc.behavior_modifiers, tc.is_security_test, tc.security_test_type,
               tc.sensitive_data_types,
-              ag.system_prompt as agent_prompt
+              COALESCE(ag.prompt, ag.config->>'prompt', ag.config->'agent'->>'prompt') as agent_prompt
        FROM test_results tr
        LEFT JOIN test_cases tc ON tr.test_case_id = tc.id
        LEFT JOIN agents ag ON tc.agent_id = ag.id

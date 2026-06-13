@@ -73,7 +73,7 @@ class InferenceScannerService {
     try {
       // Get conversation turns from test result
       const testResult = await this.pool.query(
-        `SELECT conversation_turns, agent_transcript, test_caller_transcript
+        `SELECT conversation_turns, agent_transcript
          FROM test_results WHERE id = $1`,
         [testResultId]
       );

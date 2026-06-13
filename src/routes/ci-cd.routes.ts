@@ -106,7 +106,7 @@ router.post('/trigger', async (req: Request, res: Response) => {
 
     // If prompt content provided, update agent and use it for testing
     if (promptContent) {
-      await pool.query(`UPDATE agents SET system_prompt = $1 WHERE id = $2`, [promptContent, agentId]);
+      await pool.query(`UPDATE agents SET prompt = $1 WHERE id = $2`, [promptContent, agentId]);
     }
 
     // Start execution asynchronously
@@ -182,6 +182,46 @@ router.get('/status/:testRunId', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     logger.error(`[CI/CD] Status error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * List CI/CD keys for current user (returns prefixes only, never the full key)
+ */
+router.get('/keys', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const r = await pool.query(
+      `SELECT c.id, c.agent_id, a.name AS agent_name, c.key_prefix, c.created_at, c.updated_at
+       FROM ci_cd_keys c
+       LEFT JOIN agents a ON a.id = c.agent_id
+       WHERE c.user_id = $1
+       ORDER BY c.updated_at DESC NULLS LAST, c.created_at DESC`,
+      [userId],
+    );
+    res.json({ success: true, keys: r.rows });
+  } catch (error: any) {
+    logger.error(`[CI/CD] List keys error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Revoke (delete) a CI/CD key
+ */
+router.delete('/keys/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { id } = req.params;
+    const r = await pool.query(
+      `DELETE FROM ci_cd_keys WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [id, userId],
+    );
+    if (r.rowCount === 0) return res.status(404).json({ success: false, error: 'Key not found' });
+    res.json({ success: true });
+  } catch (error: any) {
+    logger.error(`[CI/CD] Delete key error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });

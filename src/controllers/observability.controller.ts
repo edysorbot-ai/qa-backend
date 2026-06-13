@@ -95,7 +95,7 @@ export class ObservabilityController {
         query(pcMetricsSql('$2'), pcParams(previousPeriodStart)),
         query(trMetricsSql('$2'), pcParams(currentPeriodStart)),
         query(trMetricsSql('$2'), pcParams(previousPeriodStart)),
-        query(`SELECT COUNT(*) as count FROM alert_settings WHERE user_id = $1 AND is_active = true`, [userId]),
+        query(`SELECT COUNT(*) as count FROM alert_settings WHERE user_id = $1 AND enabled = true`, [userId]),
       ]);
 
       // Merge production + test_results so the totals are unified.

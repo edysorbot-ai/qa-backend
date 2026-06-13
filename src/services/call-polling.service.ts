@@ -152,11 +152,32 @@ class CallPollingService {
             for (const turn of transcriptSource) {
               // ElevenLabs can return message in different fields: message, text, content, or tool_results
               const content = turn.message || turn.text || turn.content || turn.tool_results?.content || '';
+              // Extract per-turn latency from ElevenLabs `conversation_turn_metrics`.
+              // The most useful field is `convai_llm_service_ttf_sentence` (seconds);
+              // we also accept `convai_llm_service_ttfb` and a few generic aliases.
+              let latencyMs: number | undefined;
+              const ctm = turn.conversation_turn_metrics?.metrics || turn.metrics;
+              if (ctm && typeof ctm === 'object') {
+                const candidates = [
+                  ctm.convai_llm_service_ttf_sentence,
+                  ctm.convai_llm_service_ttfb,
+                  ctm.ttfb,
+                  ctm.ttf_sentence,
+                ];
+                for (const v of candidates) {
+                  if (typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+                    latencyMs = v < 30 ? Math.round(v * 1000) : Math.round(v);
+                    break;
+                  }
+                }
+              }
               transcript.push({
                 role: turn.role === 'agent' ? 'agent' : 'user',
                 content,
-                timestamp: turn.time_in_call_secs || turn.timestamp
-              });
+                timestamp: turn.time_in_call_secs || turn.timestamp,
+                ...(latencyMs !== undefined ? { latency_ms: latencyMs } : {}),
+                ...(ctm ? { conversation_turn_metrics: { metrics: ctm } } : {}),
+              } as any);
               transcriptText += `${turn.role}: ${content}\n`;
             }
           }
@@ -211,6 +232,14 @@ class CallPollingService {
       console.error('[CallPolling] ElevenLabs fetch error:', error);
       // Re-throw residency errors so the caller can probe other hosts.
       if ((error as any)?.residency) throw error;
+      // Re-throw auth/quota errors so callers know it's a real failure (not "0 calls").
+      const msg = String((error as any)?.message || '');
+      if (/\b(401|403|429)\b/.test(msg) || /unauthor|forbidden|rate\s*limit|quota/i.test(msg)) {
+        const wrapped: any = new Error(`ElevenLabs API failure: ${msg}`);
+        wrapped.providerAuthError = /\b401|403\b/.test(msg);
+        wrapped.providerRateLimited = /\b429\b|rate\s*limit/i.test(msg);
+        throw wrapped;
+      }
       return [];
     }
   }
@@ -526,68 +555,66 @@ class CallPollingService {
 
       result.callsFetched = providerCalls.length;
 
-      // Insert new calls into database
+      // Insert new calls into database using ON CONFLICT upsert (race-safe)
       for (const call of providerCalls) {
-        // Check if call already exists
-        const existingCall = await pool.query(
-          `SELECT id FROM production_calls WHERE provider_call_id = $1 AND agent_id = $2`,
-          [call.provider_call_id, agentId]
+        // Get user_id from agent
+        const userResult = await pool.query(
+          `SELECT user_id FROM agents WHERE id = $1`,
+          [agentId]
+        );
+        const userId = userResult.rows[0]?.user_id;
+        if (!userId) continue;
+
+        const insertResult = await pool.query(
+          `INSERT INTO production_calls (
+            user_id, agent_id, provider, provider_call_id,
+            call_type, caller_phone, callee_phone, status,
+            started_at, ended_at, duration_seconds,
+            transcript, transcript_text, recording_url,
+            analysis_status, webhook_payload
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          ON CONFLICT (provider_call_id, agent_id) DO UPDATE SET
+            status = EXCLUDED.status,
+            ended_at = COALESCE(EXCLUDED.ended_at, production_calls.ended_at),
+            duration_seconds = COALESCE(EXCLUDED.duration_seconds, production_calls.duration_seconds),
+            transcript = COALESCE(EXCLUDED.transcript, production_calls.transcript),
+            transcript_text = COALESCE(EXCLUDED.transcript_text, production_calls.transcript_text),
+            recording_url = COALESCE(EXCLUDED.recording_url, production_calls.recording_url),
+            webhook_payload = EXCLUDED.webhook_payload
+          RETURNING id, (xmax = 0) AS inserted`,
+          [
+            userId, agentId, agent.provider, call.provider_call_id,
+            call.call_type, call.caller_phone, call.callee_phone, call.status,
+            call.started_at, call.ended_at, call.duration_seconds,
+            JSON.stringify(call.transcript), call.transcript_text, call.recording_url,
+            'pending', JSON.stringify({
+              metadata: call.metadata,
+              call_analysis: call.call_analysis,
+              latency: call.latency,
+              tool_calls: call.tool_calls,
+              disconnection_reason: call.disconnection_reason,
+              polled_at: new Date().toISOString()
+            })
+          ]
         );
 
-        if (existingCall.rows.length === 0) {
-          // Get user_id from agent
-          const userResult = await pool.query(
-            `SELECT user_id FROM agents WHERE id = $1`,
-            [agentId]
+        const wasInserted = insertResult.rows[0]?.inserted === true;
+        if (wasInserted) {
+          result.newCalls++;
+          const callId = insertResult.rows[0].id;
+          const creditCost = await getFeatureCreditCost(FeatureKeys.PRODUCTION_CALL_ANALYZE);
+          const credited = await deductCredits(
+            userId, creditCost,
+            'Auto-analysis of production call',
+            { callId, agentId }
           );
-          const userId = userResult.rows[0]?.user_id;
-
-          if (userId) {
-            // Insert new call
-            const insertResult = await pool.query(
-              `INSERT INTO production_calls (
-                user_id, agent_id, provider, provider_call_id,
-                call_type, caller_phone, callee_phone, status,
-                started_at, ended_at, duration_seconds,
-                transcript, transcript_text, recording_url,
-                analysis_status, webhook_payload
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-              RETURNING id`,
-              [
-                userId, agentId, agent.provider, call.provider_call_id,
-                call.call_type, call.caller_phone, call.callee_phone, call.status,
-                call.started_at, call.ended_at, call.duration_seconds,
-                JSON.stringify(call.transcript), call.transcript_text, call.recording_url,
-                'pending', JSON.stringify({
-                  metadata: call.metadata,
-                  call_analysis: call.call_analysis,
-                  latency: call.latency,
-                  tool_calls: call.tool_calls,
-                  disconnection_reason: call.disconnection_reason,
-                  polled_at: new Date().toISOString()
-                })
-              ]
+          if (credited) {
+            realtimeAnalysisService.processCall(callId).catch(console.error);
+          } else {
+            await pool.query(
+              `UPDATE production_calls SET analysis_status = 'skipped_no_credits' WHERE id = $1`,
+              [callId]
             );
-
-            result.newCalls++;
-
-            // Trigger analysis for the new call — only if user has credits
-            const callId = insertResult.rows[0].id;
-            const creditCost = await getFeatureCreditCost(FeatureKeys.PRODUCTION_CALL_ANALYZE);
-            const credited = await deductCredits(
-              userId, creditCost, 
-              'Auto-analysis of production call',
-              { callId, agentId }
-            );
-            if (credited) {
-              realtimeAnalysisService.processCall(callId).catch(console.error);
-            } else {
-              // Mark as skipped — user can manually reanalyze later
-              await pool.query(
-                `UPDATE production_calls SET analysis_status = 'skipped_no_credits' WHERE id = $1`,
-                [callId]
-              );
-            }
           }
         }
       }

@@ -15,37 +15,64 @@ import {
 const ELEVENLABS_DEFAULT_BASE_URL = 'https://api.elevenlabs.io/v1';
 
 /**
+ * Allowlist of permitted ElevenLabs host suffixes. Prevents SSRF via
+ * user-supplied baseUrl values pointing at cloud metadata (169.254.169.254),
+ * internal services, etc.
+ */
+const ELEVENLABS_ALLOWED_HOST_SUFFIXES = [
+  '.elevenlabs.io',
+  '.elevenlabs.in',
+  '.elevenlabs.ai',
+];
+
+function isAllowedElevenLabsHost(host: string): boolean {
+  const h = host.toLowerCase();
+  if (h === 'elevenlabs.io' || h === 'elevenlabs.in' || h === 'elevenlabs.ai') return true;
+  return ELEVENLABS_ALLOWED_HOST_SUFFIXES.some((s) => h.endsWith(s));
+}
+
+/**
  * Resolve the ElevenLabs base URL from a custom domain or use the default.
  * Accepts formats like:
  *   - "elevenlabs.in" → "https://api.elevenlabs.in/v1"
  *   - "api.elevenlabs.in" → "https://api.elevenlabs.in/v1"
  *   - "https://api.elevenlabs.in/v1" → as-is
  *   - null/undefined → default "https://api.elevenlabs.io/v1"
+ * SSRF protection: any host not on the ElevenLabs allowlist falls back to default.
  */
 export function resolveElevenLabsBaseUrl(baseUrl?: string | null): string {
   if (!baseUrl || !baseUrl.trim()) {
     return ELEVENLABS_DEFAULT_BASE_URL;
   }
-  
-  let url = baseUrl.trim().replace(/\/+$/, ''); // Remove trailing slashes
-  
-  // If it's already a full URL with /v1, use as-is
+
+  let url = baseUrl.trim().replace(/\/+$/, '');
+
+  // Build a candidate URL string
+  let candidate: string;
   if (url.startsWith('https://') && url.includes('/v1')) {
-    return url;
+    candidate = url;
+  } else if (url.startsWith('https://')) {
+    candidate = `${url}/v1`;
+  } else if (url.startsWith('http://')) {
+    // never allow plain http
+    return ELEVENLABS_DEFAULT_BASE_URL;
+  } else if (url.startsWith('api.')) {
+    candidate = `https://${url}/v1`;
+  } else {
+    candidate = `https://api.${url}/v1`;
   }
-  
-  // If it's a full URL without /v1, append it
-  if (url.startsWith('https://')) {
-    return `${url}/v1`;
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'https:') return ELEVENLABS_DEFAULT_BASE_URL;
+    if (!isAllowedElevenLabsHost(parsed.hostname)) {
+      console.warn(`[elevenlabs] Rejecting non-allowlisted base URL host: ${parsed.hostname}`);
+      return ELEVENLABS_DEFAULT_BASE_URL;
+    }
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return ELEVENLABS_DEFAULT_BASE_URL;
   }
-  
-  // If it starts with "api.", treat as full domain
-  if (url.startsWith('api.')) {
-    return `https://${url}/v1`;
-  }
-  
-  // Otherwise, it's a bare domain like "elevenlabs.in" → "https://api.elevenlabs.in/v1"
-  return `https://api.${url}/v1`;
 }
 
 // ElevenLabs plan concurrency limits
