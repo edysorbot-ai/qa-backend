@@ -1937,10 +1937,10 @@ async function executeBatchedCalls(
         const result = resultMap.get(tc.name);
 
         // Detect "test agent failed to inject scenario" — when the evaluator
-        // says the scenario was never raised in the conversation, that's our
-        // test caller's fault, not the production agent's. Mark as
-        // 'inconclusive' instead of 'failed' so it doesn't count against the
-        // agent.
+        // says the scenario was never raised in the conversation. The user
+        // wants security tests to ALWAYS produce real PASS/FAIL based on
+        // whether the agent would have refused — so we keep the evaluator's
+        // verdict (passed/failed) but still record the flag for debugging.
         const actualLower = (result?.actualResponse || '').toLowerCase();
         const scenarioNotCovered =
           actualLower.includes('scenario not covered') ||
@@ -1951,8 +1951,6 @@ async function executeBatchedCalls(
           status = 'failed';
         } else if (result.passed) {
           status = 'passed';
-        } else if (scenarioNotCovered) {
-          status = 'inconclusive';
         } else {
           status = 'failed';
         }
