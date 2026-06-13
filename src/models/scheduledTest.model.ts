@@ -160,16 +160,26 @@ export const ScheduledTestModel = {
     return result.rows[0] ? this.formatScheduledTest(result.rows[0]) : null;
   },
 
-  // Get all active scheduled tests that are due to run
+  // Atomically claim due scheduled tests. Uses SELECT FOR UPDATE SKIP LOCKED
+  // and bumps next_run_at to far-future so concurrent workers don't double-fire.
+  // The runner is responsible for calling updateAfterRun() to set the real next time.
   async findDueTests(): Promise<ScheduledTest[]> {
-    const query = `
-      SELECT * FROM scheduled_tests
-      WHERE status = 'active'
-        AND next_run_at <= NOW()
-      ORDER BY next_run_at ASC
+    const claimSql = `
+      WITH due AS (
+        SELECT id FROM scheduled_tests
+        WHERE status = 'active' AND next_run_at <= NOW()
+        ORDER BY next_run_at ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 50
+      )
+      UPDATE scheduled_tests s
+        SET next_run_at = NOW() + INTERVAL '1 day',
+            updated_at = CURRENT_TIMESTAMP
+      FROM due
+      WHERE s.id = due.id
+      RETURNING s.*;
     `;
-    // Use retry logic for scheduler queries to handle Neon cold starts
-    const result = await queryWithRetry(query);
+    const result = await queryWithRetry(claimSql);
     return result.rows.map(this.formatScheduledTest);
   },
 

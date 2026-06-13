@@ -367,6 +367,121 @@ export class TestCaseController {
       next(error);
     }
   }
+
+  /**
+   * GET /api/test-cases/security-suite
+   * Returns the full 75-test security catalog (no DB writes). Light-weight
+   * summary fields — full prompts/criteria are returned too so the UI can
+   * preview without a second round-trip.
+   */
+  async securitySuiteCatalog(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const { getSecuritySuiteCatalog } = await import(
+        '../services/seed-adversarial-test-cases.service'
+      );
+      const catalog = getSecuritySuiteCatalog();
+      const grouped: Record<string, number> = {};
+      for (const t of catalog) grouped[t.category] = (grouped[t.category] || 0) + 1;
+      res.json({
+        total: catalog.length,
+        countsByCategory: grouped,
+        tests: catalog.map((t) => ({
+          test_id: t.test_id,
+          name: t.name,
+          category: t.category,
+          keyTopic: t.keyTopic,
+          priority: t.priority,
+          security_test_type: t.security_test_type,
+          scenario: t.scenario,
+          expectedOutcome: t.expectedOutcome,
+        })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/test-cases/security-suite/add
+   * Body: { agent_id: string, test_ids: string[] }
+   * Creates real test_cases rows for the picked spec entries. Skips any
+   * test_id that already exists for the agent (idempotent — safe to re-run).
+   */
+  async addFromSecuritySuite(req: Request, res: Response, next: NextFunction) {
+    try {
+      const clerkUser = (req as any).auth;
+      const user = await userService.findOrCreateByClerkId(clerkUser.userId);
+      const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
+
+      const { agent_id, test_ids } = req.body || {};
+      if (!agent_id || !Array.isArray(test_ids) || test_ids.length === 0) {
+        return res
+          .status(400)
+          .json({ error: 'agent_id and non-empty test_ids[] are required' });
+      }
+
+      const { getSecuritySuiteCatalog } = await import(
+        '../services/seed-adversarial-test-cases.service'
+      );
+      const catalog = getSecuritySuiteCatalog();
+      const picked = catalog.filter((t) => t.test_id && test_ids.includes(t.test_id));
+      if (picked.length === 0) {
+        return res.status(400).json({ error: 'No matching test_ids found in catalog' });
+      }
+
+      // Skip duplicates already attached to this agent. We match by the spec
+      // Test ID prefix in the test_case name ("SEC-PI-01: ...").
+      const existing = await testCaseService.findByAgentId(agent_id);
+      const existingTestIds = new Set(
+        existing
+          .map((tc: any) => {
+            const m = /^([A-Z]+-[A-Z0-9]+-\d+):/.exec(tc.name || '');
+            return m ? m[1] : null;
+          })
+          .filter(Boolean) as string[],
+      );
+      const toCreate = picked.filter((t) => !existingTestIds.has(t.test_id!));
+
+      if (toCreate.length === 0) {
+        return res.json({
+          created: [],
+          skipped: picked.length,
+          message: 'All selected tests already attached to this agent.',
+        });
+      }
+
+      const rows = toCreate.map((t) => ({
+        agent_id,
+        user_id: effectiveUserId,
+        name: t.name,
+        scenario: t.scenario,
+        expected_behavior: t.expectedOutcome,
+        category: t.category,
+        key_topic: t.keyTopic,
+        priority: t.priority,
+        batch_compatible: true,
+        is_security_test: true,
+        security_test_type: t.security_test_type as any,
+        created_via: 'auto_seed' as const,
+        gold_gate: 'soft' as const,
+      }));
+
+      const created = await testCaseService.createMany(rows as any[]);
+
+      await deductCreditsAfterSuccess(
+        req as CreditRequest,
+        `Added ${created.length} security-suite tests to agent`,
+        { agent_id, count: created.length, test_ids: toCreate.map((t) => t.test_id) },
+      );
+
+      res.status(201).json({
+        created,
+        skipped: picked.length - created.length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const testCaseController = new TestCaseController();

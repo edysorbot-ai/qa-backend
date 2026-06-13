@@ -12,7 +12,7 @@ import { addTestCaseCategoryPriority } from './db/migrations/009_add_test_case_c
 import { addPromptSuggestionsColumn } from './db/migrations/010_add_prompt_suggestions';
 import { createTestWorkflowsTable } from './db/migrations/011_create_test_workflows';
 import { addTestModeColumn } from './db/migrations/012_add_test_mode_column';
-import { updateAlertEmailStructure } from './db/migrations/012_update_alert_email_structure';
+import { updateAlertEmailStructure } from './db/migrations/048_update_alert_email_structure';
 import { createMonitoringTables } from './db/migrations/013_create_monitoring_tables';
 import { addProviderAgentIdColumn } from './db/migrations/014_add_provider_agent_id';
 import { addSlackIntegration } from './db/migrations/015_add_slack_integration';
@@ -47,6 +47,11 @@ import { up as addFalseNegativeTracking } from './db/migrations/043_add_false_ne
 import { up as addGoldExamples } from './db/migrations/044_add_gold_examples';
 import { up as addReferenceLinkAndAmendments } from './db/migrations/045_add_reference_link_and_amendments';
 import { up as addEscalationChannels } from './db/migrations/046_add_escalation_channels';
+import { up as addOutageRlaifConsumption } from './db/migrations/047_add_outage_rlaif_consumption';
+import { addProductionCallsUnique } from './db/migrations/049_production_calls_unique';
+import { addAgentsUserExternalUnique } from './db/migrations/050_agents_user_external_unique';
+import { addSavedBatchesIsSecurity } from './db/migrations/051_add_saved_batches_is_security';
+import { extendConsistencyRuns } from './db/migrations/052_extend_consistency_runs';
 import { addTestResultColumns } from './db/migrations/add-test-result-columns';
 import { createAlertSettingsTable } from './db/migrations/create-alert-settings';
 import { createTeamMembersTable } from './db/migrations/create-team-members';
@@ -115,7 +120,12 @@ const startServer = async () => {
     await addTestResultColumns();
     await createAlertSettingsTable();
     await addEscalationChannels(pool);
+    await addOutageRlaifConsumption(pool);
     await createTeamMembersTable();
+    await addProductionCallsUnique();
+    await addAgentsUserExternalUnique();
+    await addSavedBatchesIsSecurity();
+    await extendConsistencyRuns();
     
     // Create scheduled tests table
     await ScheduledTestModel.createTable();
@@ -132,23 +142,40 @@ const startServer = async () => {
     // Store connections by user ID
     const userConnections = new Map<string, Set<WebSocket>>();
 
-    wss.on('connection', (ws, req) => {
+    wss.on('connection', async (ws, req) => {
       console.log('[WebSocket] New connection');
-      
-      // Extract user ID from query string or verify token
+
+      // Extract token from query string and verify with Clerk
       const url = new URL(req.url || '', `http://localhost`);
-      const userId = url.searchParams.get('userId');
       const token = url.searchParams.get('token');
-      
-      // Require either userId or token for connection
-      if (!userId && !token) {
-        console.log('[WebSocket] Connection rejected - no userId or token');
+
+      if (!token) {
+        console.log('[WebSocket] Connection rejected - no token');
         ws.close(4001, 'Authentication required');
         return;
       }
 
-      const connUserId = userId || 'anonymous';
-      
+      let connUserId: string | null = null;
+      try {
+        // Verify the Clerk session token and resolve to internal user id
+        const { verifyToken } = await import('@clerk/backend');
+        const verified = await verifyToken(token, {
+          secretKey: process.env.CLERK_SECRET_KEY,
+        });
+        const clerkId = (verified as any)?.sub;
+        if (!clerkId) throw new Error('Invalid token: no sub');
+        const u = await pool.query(
+          `SELECT id FROM users WHERE clerk_id = $1 LIMIT 1`,
+          [clerkId],
+        );
+        if (u.rows.length === 0) throw new Error('User not found for clerk id');
+        connUserId = u.rows[0].id;
+      } catch (err: any) {
+        console.log('[WebSocket] Connection rejected - invalid token:', err?.message);
+        ws.close(4003, 'Invalid token');
+        return;
+      }
+
       if (connUserId) {
         if (!userConnections.has(connUserId)) {
           userConnections.set(connUserId, new Set());

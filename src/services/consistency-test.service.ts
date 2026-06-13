@@ -56,109 +56,192 @@ export class ConsistencyTestService {
     iterations: number = 30,
     callAgentFn: (testCase: any) => Promise<{ text: string; latencyMs: number }>
   ): Promise<ConsistencyResult> {
-    // Create the consistency run record
-    const runResult = await this.pool.query(
-      `INSERT INTO consistency_test_runs (agent_id, test_case_id, user_id, iterations, status)
-       VALUES ($1, $2, $3, $4, 'running')
-       RETURNING *`,
-      [agentId, testCaseId, userId, iterations]
-    );
-    const run = runResult.rows[0];
-
-    // Get the test case
+    // Single test case → delegate to multi-case path with one element.
     const tcResult = await this.pool.query(
       `SELECT * FROM test_cases WHERE id = $1`,
       [testCaseId]
     );
-    
     if (tcResult.rows.length === 0) {
-      await this.pool.query(
-        `UPDATE consistency_test_runs SET status = 'failed' WHERE id = $1`,
-        [run.id]
-      );
       throw new Error('Test case not found');
     }
-
     const testCase = tcResult.rows[0];
+    return this.startConsistencyTestMulti(
+      agentId,
+      [testCase],
+      userId,
+      iterations,
+      callAgentFn,
+      {
+        mode: 'single',
+        isSecurity: !!testCase.is_security_test,
+      }
+    );
+  }
+
+  /**
+   * Run consistency over one or many test cases.
+   * - mode='single' with one test case → 1 record, classic flow
+   * - mode='batch' with N test cases → runs each test case `iterations` times
+   *   and computes per-test-case + overall consistency.
+   */
+  async startConsistencyTestMulti(
+    agentId: string,
+    testCases: any[],
+    userId: string,
+    iterations: number,
+    callAgentFn: (testCase: any) => Promise<{ text: string; latencyMs: number }>,
+    opts: {
+      mode: 'single' | 'batch';
+      isSecurity: boolean;
+      batchId?: string | null;
+      batchName?: string | null;
+    }
+  ): Promise<ConsistencyResult> {
+    if (!testCases.length) throw new Error('No test cases provided');
+
+    const primaryTestCaseId = opts.mode === 'single' ? testCases[0].id : null;
+
+    const runResult = await this.pool.query(
+      `INSERT INTO consistency_test_runs
+         (agent_id, test_case_id, user_id, iterations, status,
+          mode, batch_id, batch_name, is_security, test_case_ids)
+       VALUES ($1, $2, $3, $4, 'running', $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        agentId,
+        primaryTestCaseId,
+        userId,
+        iterations,
+        opts.mode,
+        opts.batchId || null,
+        opts.batchName || null,
+        !!opts.isSecurity,
+        JSON.stringify(testCases.map(tc => tc.id)),
+      ]
+    );
+    const run = runResult.rows[0];
 
     try {
-      // Run iterations and collect responses
-      const responses: Array<{ text: string; latencyMs: number }> = [];
-      
-      for (let i = 0; i < iterations; i++) {
-        const result = await callAgentFn(testCase);
-        responses.push(result);
-      }
+      const perTestCaseScores: Array<{
+        testCaseId: string;
+        name: string;
+        score: number;
+        outlierCount: number;
+        clusters: ResponseCluster[];
+      }> = [];
 
-      // Get embeddings for all responses
-      const embeddings = await this.getEmbeddings(responses.map(r => r.text));
+      const allSimilarities: number[] = [];
+      let totalOutliers = 0;
+      const allIterationResults: IterationResult[] = [];
 
-      // Calculate consistency metrics
-      const baselineEmbedding = embeddings[0];
-      const similarities: number[] = [];
-      const iterationData: IterationResult[] = [];
+      for (const tc of testCases) {
+        const responses: Array<{ text: string; latencyMs: number }> = [];
+        for (let i = 0; i < iterations; i++) {
+          const result = await callAgentFn(tc);
+          responses.push(result);
+        }
 
-      for (let i = 0; i < responses.length; i++) {
-        const similarity = this.cosineSimilarity(baselineEmbedding, embeddings[i]);
-        similarities.push(similarity);
-        
-        const isOutlier = similarity < 0.85; // Default threshold
-        
-        iterationData.push({
-          iteration: i + 1,
-          response: responses[i].text,
-          similarityToBaseline: similarity,
-          isOutlier,
-          latencyMs: responses[i].latencyMs,
+        const embeddings = await this.getEmbeddings(responses.map(r => r.text));
+        const baseline = embeddings[0];
+        const sims: number[] = [];
+        const tcIterData: IterationResult[] = [];
+
+        for (let i = 0; i < responses.length; i++) {
+          const similarity = this.cosineSimilarity(baseline, embeddings[i]);
+          sims.push(similarity);
+          const isOutlier = similarity < 0.85;
+          if (isOutlier) totalOutliers++;
+          tcIterData.push({
+            iteration: i + 1,
+            response: responses[i].text,
+            similarityToBaseline: similarity,
+            isOutlier,
+            latencyMs: responses[i].latencyMs,
+          });
+
+          await this.pool.query(
+            `INSERT INTO consistency_test_iterations
+               (consistency_run_id, iteration_number, response, embedding,
+                similarity_to_baseline, is_outlier, latency_ms, test_case_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              run.id,
+              i + 1,
+              responses[i].text,
+              JSON.stringify(embeddings[i]),
+              similarity,
+              isOutlier,
+              responses[i].latencyMs,
+              tc.id,
+            ]
+          );
+        }
+
+        const tcScore = (sims.reduce((a, b) => a + b, 0) / sims.length) * 100;
+        const tcOutliers = tcIterData.filter(r => r.isOutlier).length;
+        const tcClusters = this.clusterResponses(
+          responses.map(r => r.text),
+          embeddings,
+          sims
+        );
+
+        perTestCaseScores.push({
+          testCaseId: tc.id,
+          name: tc.name,
+          score: tcScore,
+          outlierCount: tcOutliers,
+          clusters: tcClusters,
         });
 
-        // Store iteration result
-        await this.pool.query(
-          `INSERT INTO consistency_test_iterations 
-           (consistency_run_id, iteration_number, response, embedding, similarity_to_baseline, is_outlier, latency_ms)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [run.id, i + 1, responses[i].text, JSON.stringify(embeddings[i]), similarity, isOutlier, responses[i].latencyMs]
-        );
+        allSimilarities.push(...sims);
+        allIterationResults.push(...tcIterData);
       }
 
-      // Calculate consistency score (mean similarity)
-      const consistencyScore = (similarities.reduce((a, b) => a + b, 0) / similarities.length) * 100;
-
-      // Calculate semantic variance (standard deviation)
-      const mean = similarities.reduce((a, b) => a + b, 0) / similarities.length;
-      const variance = similarities.reduce((sum, s) => sum + Math.pow(s - mean, 2), 0) / similarities.length;
+      const consistencyScore =
+        (allSimilarities.reduce((a, b) => a + b, 0) / allSimilarities.length) * 100;
+      const mean = allSimilarities.reduce((a, b) => a + b, 0) / allSimilarities.length;
+      const variance =
+        allSimilarities.reduce((sum, s) => sum + Math.pow(s - mean, 2), 0) /
+        allSimilarities.length;
       const semanticVariance = Math.sqrt(variance);
 
-      // Count outliers
-      const outlierCount = iterationData.filter(r => r.isOutlier).length;
+      // Top-level clusters: in batch mode, just concatenate per-tc clusters
+      // (frontend uses per_test_case_scores for breakdowns).
+      const flattenedClusters: ResponseCluster[] =
+        opts.mode === 'batch'
+          ? perTestCaseScores.flatMap(p => p.clusters)
+          : perTestCaseScores[0].clusters;
 
-      // Cluster responses
-      const clusters = this.clusterResponses(responses.map(r => r.text), embeddings, similarities);
-
-      // Update run with results
       await this.pool.query(
-        `UPDATE consistency_test_runs 
-         SET consistency_score = $1, semantic_variance = $2, outlier_count = $3, 
-             response_clusters = $4, status = 'completed', completed_at = CURRENT_TIMESTAMP
-         WHERE id = $5`,
-        [consistencyScore, semanticVariance, outlierCount, JSON.stringify(clusters), run.id]
+        `UPDATE consistency_test_runs
+           SET consistency_score = $1, semantic_variance = $2, outlier_count = $3,
+               response_clusters = $4, per_test_case_scores = $5,
+               status = 'completed', completed_at = CURRENT_TIMESTAMP
+         WHERE id = $6`,
+        [
+          consistencyScore,
+          semanticVariance,
+          totalOutliers,
+          JSON.stringify(flattenedClusters),
+          JSON.stringify(perTestCaseScores),
+          run.id,
+        ]
       );
 
       return {
         id: run.id,
-        testCaseId,
+        testCaseId: primaryTestCaseId || '',
         agentId,
         iterations,
         consistencyScore,
         semanticVariance,
-        outlierCount,
-        responseClusters: clusters,
+        outlierCount: totalOutliers,
+        responseClusters: flattenedClusters,
         status: 'completed',
         createdAt: run.created_at,
         completedAt: new Date().toISOString(),
-        iterationResults: iterationData,
+        iterationResults: allIterationResults,
       };
-
     } catch (error) {
       await this.pool.query(
         `UPDATE consistency_test_runs SET status = 'failed' WHERE id = $1`,
@@ -302,7 +385,15 @@ export class ConsistencyTestService {
       createdAt: run.created_at,
       completedAt: run.completed_at,
       iterationResults,
-    };
+      ...( {
+        mode: run.mode || 'single',
+        batchId: run.batch_id || null,
+        batchName: run.batch_name || null,
+        isSecurity: !!run.is_security,
+        perTestCaseScores: run.per_test_case_scores || null,
+        testCaseIds: run.test_case_ids || null,
+      } as any),
+    } as any;
   }
 
   /**
@@ -331,7 +422,13 @@ export class ConsistencyTestService {
       status: run.status,
       createdAt: run.created_at,
       completedAt: run.completed_at,
-    }));
+      mode: run.mode || 'single',
+      batchId: run.batch_id || null,
+      batchName: run.batch_name || null,
+      isSecurity: !!run.is_security,
+      perTestCaseScores: run.per_test_case_scores || null,
+      testCaseIds: run.test_case_ids || null,
+    })) as any;
   }
 
   /**

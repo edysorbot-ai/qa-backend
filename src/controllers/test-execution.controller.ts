@@ -38,6 +38,18 @@ if (!fs.existsSync(recordingsDir)) {
 const router = Router();
 
 /**
+ * Resolve our internal user id (UUID) from the Clerk-authenticated request.
+ * Returns null if the user can't be resolved — caller should 401 in that case.
+ */
+async function resolveInternalUserId(req: Request): Promise<string | null> {
+  const auth = (req as any).auth;
+  const clerkUserId = auth?.userId;
+  if (!clerkUserId) return null;
+  const r = await pool.query('SELECT id FROM users WHERE clerk_id = $1', [clerkUserId]);
+  return r.rows[0]?.id || null;
+}
+
+/**
  * @deprecated Use /start-batched instead. Kept for backward compat.
  * Start a new test run
  * POST /api/test-execution/start
@@ -1011,10 +1023,11 @@ router.get('/runs', async (req: Request, res: Response) => {
         COUNT(trs.id) as completed_cases,
         COUNT(CASE WHEN trs.status = 'passed' THEN 1 END) as passed_cases,
         COUNT(CASE WHEN trs.status = 'failed' THEN 1 END) as failed_cases,
-        COUNT(CASE WHEN trs.is_security_test = TRUE THEN 1 END) as security_cases,
-        COUNT(CASE WHEN trs.is_security_test = FALSE OR trs.is_security_test IS NULL THEN 1 END) as normal_cases
+        COUNT(CASE WHEN tc.is_security_test = TRUE THEN 1 END) as security_cases,
+        COUNT(CASE WHEN trs.id IS NOT NULL AND (tc.is_security_test = FALSE OR tc.is_security_test IS NULL) THEN 1 END) as normal_cases
       FROM test_runs tr
       LEFT JOIN test_results trs ON trs.test_run_id = tr.id
+      LEFT JOIN test_cases tc ON tc.id = trs.test_case_id
       WHERE tr.user_id = $1
       GROUP BY tr.id 
       ORDER BY tr.created_at DESC 
@@ -2450,14 +2463,15 @@ router.post('/test-case-templates/generate', async (req: Request, res: Response)
       return res.status(404).json({ success: false, error: 'Template not found' });
     }
     const agQ = await pool.query(
-      `SELECT id, name, system_prompt, first_message FROM agents WHERE id = $1`,
+      `SELECT id, name, prompt, first_message, config FROM agents WHERE id = $1`,
       [agentId],
     );
     if (agQ.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Agent not found' });
     }
     const agent = agQ.rows[0];
-    const filled = await fillTemplateForAgent(template, agent.system_prompt || '', agent.first_message || '');
+    const sp = agent.prompt || agent.config?.systemPrompt || agent.config?.system_prompt || '';
+    const filled = await fillTemplateForAgent(template, sp, agent.first_message || '');
     return res.json({ success: true, testCase: filled, template: { id: template.id, name: template.name } });
   } catch (error: any) {
     logger.error(`[Templates] Generate error: ${error.message}`);
@@ -2481,7 +2495,7 @@ router.post('/reevaluate-result', async (req: Request, res: Response) => {
       `SELECT tr.*, tc.agent_id, tc.persona_type, tc.persona_traits, tc.voice_accent,
               tc.behavior_modifiers, tc.is_security_test, tc.security_test_type,
               tc.sensitive_data_types,
-              ag.system_prompt as agent_prompt
+              COALESCE(ag.prompt, ag.config->>'prompt', ag.config->'agent'->>'prompt') as agent_prompt
        FROM test_results tr
        LEFT JOIN test_cases tc ON tr.test_case_id = tc.id
        LEFT JOIN agents ag ON tc.agent_id = ag.id
@@ -2750,18 +2764,21 @@ router.get('/agent-prompt-amendments/:agentId', async (req: Request, res: Respon
  */
 router.post('/save-batches', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId;
-    const { agentId, name, batches, testCaseIds } = req.body;
+    const userId = await resolveInternalUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' });
+    }
+    const { agentId, name, batches, testCaseIds, isSecurity } = req.body;
 
     if (!agentId || !batches || !testCaseIds) {
       return res.status(400).json({ success: false, error: 'agentId, batches, and testCaseIds are required' });
     }
 
     const result = await pool.query(
-      `INSERT INTO saved_batches (agent_id, user_id, name, batch_data, test_case_ids)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO saved_batches (agent_id, user_id, name, batch_data, test_case_ids, is_security)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [agentId, userId, name || `Batch ${new Date().toLocaleDateString()}`, JSON.stringify(batches), testCaseIds]
+      [agentId, userId, name || `Batch ${new Date().toLocaleDateString()}`, JSON.stringify(batches), testCaseIds, !!isSecurity]
     );
 
     res.json({ success: true, savedBatch: result.rows[0] });
@@ -2776,7 +2793,10 @@ router.post('/save-batches', async (req: Request, res: Response) => {
  */
 router.get('/saved-batches/:agentId', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId;
+    const userId = await resolveInternalUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' });
+    }
     const { agentId } = req.params;
 
     const result = await pool.query(
@@ -2798,7 +2818,10 @@ router.get('/saved-batches/:agentId', async (req: Request, res: Response) => {
  */
 router.put('/saved-batches/:id', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId;
+    const userId = await resolveInternalUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' });
+    }
     const { id } = req.params;
     const { name, batches } = req.body;
 
@@ -2850,7 +2873,10 @@ router.put('/saved-batches/:id', async (req: Request, res: Response) => {
  */
 router.delete('/saved-batches/:id', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId;
+    const userId = await resolveInternalUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' });
+    }
     const { id } = req.params;
 
     await pool.query(

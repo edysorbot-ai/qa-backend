@@ -30,70 +30,89 @@ export function setWebSocketBroadcast(fn: (userId: string, event: string, data: 
 function verifyWebhookSignature(provider: string) {
   return (req: Request, res: Response, next: Function) => {
     const body = JSON.stringify(req.body);
-    
+
+    // Generic enforcement helper: when a secret is configured for this
+    // provider, the signature/token MUST be present and valid.
+    const reject = (msg: string) => {
+      logger.security.warn(`Webhook rejected: ${msg}`, { provider, ip: req.ip });
+      return res.status(401).json({ error: msg });
+    };
+
     switch (provider) {
       case 'retell': {
-        // Retell sends x-retell-signature header (HMAC-SHA256)
         const signature = req.headers['x-retell-signature'] as string;
         const secret = process.env.RETELL_WEBHOOK_SECRET;
-        if (secret && signature) {
+        if (secret) {
+          if (!signature) return reject('Missing signature');
           const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
-          if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-            logger.security.warn('Webhook signature mismatch', { provider, ip: req.ip });
-            return res.status(401).json({ error: 'Invalid signature' });
+          try {
+            if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+              return reject('Invalid signature');
+            }
+          } catch {
+            return reject('Invalid signature');
           }
-        } else if (!signature) {
-          logger.security.info('Webhook received without signature', { provider, ip: req.ip });
+        } else {
+          logger.security.info('Webhook received with no secret configured', { provider, ip: req.ip });
         }
         break;
       }
       case 'vapi': {
-        // VAPI sends x-vapi-signature header (HMAC-SHA256)
         const signature = req.headers['x-vapi-signature'] as string;
         const secret = process.env.VAPI_WEBHOOK_SECRET;
-        if (secret && signature) {
+        if (secret) {
+          if (!signature) return reject('Missing signature');
           const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
-          if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-            logger.security.warn('Webhook signature mismatch', { provider, ip: req.ip });
-            return res.status(401).json({ error: 'Invalid signature' });
+          try {
+            if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+              return reject('Invalid signature');
+            }
+          } catch {
+            return reject('Invalid signature');
           }
-        } else if (!signature) {
-          logger.security.info('Webhook received without signature', { provider, ip: req.ip });
+        } else {
+          logger.security.info('Webhook received with no secret configured', { provider, ip: req.ip });
         }
         break;
       }
       case 'elevenlabs': {
-        // ElevenLabs sends xi-signature header
         const signature = req.headers['xi-signature'] as string;
         const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
-        if (secret && signature) {
+        if (secret) {
+          if (!signature) return reject('Missing signature');
           const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
-          if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-            logger.security.warn('Webhook signature mismatch', { provider, ip: req.ip });
-            return res.status(401).json({ error: 'Invalid signature' });
+          try {
+            if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+              return reject('Invalid signature');
+            }
+          } catch {
+            return reject('Invalid signature');
           }
-        } else if (!signature) {
-          logger.security.info('Webhook received without signature', { provider, ip: req.ip });
+        } else {
+          logger.security.info('Webhook received with no secret configured', { provider, ip: req.ip });
         }
         break;
       }
       case 'bolna':
       case 'livekit': {
-        // Generic token-based verification
         const token = req.headers['x-webhook-token'] as string;
         const secret = process.env[`${provider.toUpperCase()}_WEBHOOK_SECRET`];
-        if (secret && token) {
-          if (!crypto.timingSafeEqual(Buffer.from(token), Buffer.from(secret))) {
-            logger.security.warn('Webhook token mismatch', { provider, ip: req.ip });
-            return res.status(401).json({ error: 'Invalid token' });
+        if (secret) {
+          if (!token) return reject('Missing token');
+          try {
+            if (!crypto.timingSafeEqual(Buffer.from(token), Buffer.from(secret))) {
+              return reject('Invalid token');
+            }
+          } catch {
+            return reject('Invalid token');
           }
-        } else if (!token) {
-          logger.security.info('Webhook received without token', { provider, ip: req.ip });
+        } else {
+          logger.security.info('Webhook received with no secret configured', { provider, ip: req.ip });
         }
         break;
       }
     }
-    
+
     next();
   };
 }

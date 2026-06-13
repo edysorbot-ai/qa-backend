@@ -15,7 +15,14 @@ import { Provider } from '../models/integration.model';
 export async function startConsistencyTest(req: Request, res: Response, next: NextFunction) {
   try {
     const { agentId } = req.params;
-    const { testCaseId, iterations = 30 } = req.body;
+    const {
+      testCaseId,
+      testCaseIds,
+      batchId,
+      mode = 'single',
+      isSecurity = false,
+      iterations = 30,
+    } = req.body;
     const clerkUser = (req as any).auth;
     const user = await userService.findOrCreateByClerkId(clerkUser.userId);
     const effectiveUserId = await teamMemberService.getOwnerUserId(user.id);
@@ -33,18 +40,57 @@ export async function startConsistencyTest(req: Request, res: Response, next: Ne
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    if (!testCaseId) {
-      return res.status(400).json({ error: 'testCaseId is required' });
+    // Resolve which test cases to run
+    let testCases: any[] = [];
+    let resolvedBatchName: string | null = null;
+    let resolvedBatchId: string | null = null;
+
+    if (mode === 'batch') {
+      if (!batchId) {
+        return res.status(400).json({ error: 'batchId is required when mode=batch' });
+      }
+      const batchRes = await pool.query(
+        `SELECT * FROM saved_batches WHERE id = $1 AND agent_id = $2`,
+        [batchId, agentId]
+      );
+      if (batchRes.rows.length === 0) {
+        return res.status(404).json({ error: 'Saved batch not found' });
+      }
+      const batch = batchRes.rows[0];
+      resolvedBatchName = batch.name;
+      resolvedBatchId = batch.id;
+
+      const ids: string[] = Array.isArray(batch.test_case_ids)
+        ? batch.test_case_ids
+        : (batch.test_case_ids ? JSON.parse(batch.test_case_ids) : []);
+
+      if (!ids.length) {
+        return res.status(400).json({ error: 'Saved batch contains no test cases' });
+      }
+
+      const tcRes = await pool.query(
+        `SELECT * FROM test_cases WHERE id = ANY($1::uuid[]) AND agent_id = $2`,
+        [ids, agentId]
+      );
+      testCases = tcRes.rows;
+    } else {
+      // single mode: accept testCaseId (legacy) or testCaseIds[0]
+      const id = testCaseId || (Array.isArray(testCaseIds) ? testCaseIds[0] : null);
+      if (!id) {
+        return res.status(400).json({ error: 'testCaseId is required' });
+      }
+      const tcRes = await pool.query(
+        `SELECT * FROM test_cases WHERE id = $1 AND agent_id = $2`,
+        [id, agentId]
+      );
+      if (tcRes.rows.length === 0) {
+        return res.status(404).json({ error: 'Test case not found' });
+      }
+      testCases = tcRes.rows;
     }
 
-    // Verify test case exists and belongs to agent
-    const tcResult = await pool.query(
-      `SELECT * FROM test_cases WHERE id = $1 AND agent_id = $2`,
-      [testCaseId, agentId]
-    );
-
-    if (tcResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Test case not found' });
+    if (!testCases.length) {
+      return res.status(400).json({ error: 'No test cases resolved' });
     }
 
     const service = getConsistencyTestService(pool);
@@ -53,20 +99,27 @@ export async function startConsistencyTest(req: Request, res: Response, next: Ne
     const apiKey = agent.api_key || '';
     const externalAgentId = agent.external_agent_id || agent.id;
 
-    // Real agent call function using provider chat APIs
-    const callAgent = async (testCase: any) => {
-      const startTime = Date.now();
-
-      // Build the user message from the test case
-      const userMessage = testCase.steps?.[0]?.input
+    // Build the user message; for security tests, prefix with the
+    // adversarial objective from the test case so the agent sees the
+    // attack input it would in a real security run.
+    const buildUserMessage = (testCase: any): string => {
+      const base = testCase.steps?.[0]?.input
         || testCase.input
         || testCase.description
         || testCase.name;
+      if (testCase.is_security_test && testCase.adversarial_prompt) {
+        return testCase.adversarial_prompt;
+      }
+      return base;
+    };
+
+    const callAgent = async (testCase: any) => {
+      const startTime = Date.now();
+      const userMessage = buildUserMessage(testCase);
 
       let responseText = '';
 
       if (provider === 'custom') {
-        // Custom agents need the config object from agent.config
         const config: CustomAgentConfig = {
           name: agent.name || 'Custom Agent',
           systemPrompt: agent.config?.system_prompt || agent.config?.systemPrompt || agent.prompt || '',
@@ -78,20 +131,14 @@ export async function startConsistencyTest(req: Request, res: Response, next: Ne
           knowledgeBase: agent.config?.knowledge_base || agent.config?.knowledgeBase || '',
           responseStyle: agent.config?.response_style || agent.config?.responseStyle || 'conversational',
         };
-
-        // Each iteration gets a fresh session so responses are independent
         const sessionId = `consistency_${agent.id}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const chatResult = await customProvider.chat('custom', externalAgentId, userMessage, { sessionId, config });
         responseText = chatResult?.output?.[0]?.message || '';
       } else {
-        // External providers (vapi, elevenlabs, haptik, etc.) use the standard chat interface
         const providerClient = getProviderClient(provider);
-
         if (providerClient.supportsChatTesting?.() === false || !providerClient.chat) {
           throw new Error(`Provider "${provider}" does not support text-based chat testing. Use voice-based tests instead.`);
         }
-
-        // Each iteration gets a fresh session so responses are independent
         const chatResult = await providerClient.chat(apiKey, externalAgentId, userMessage);
         responseText = chatResult?.output?.[0]?.message || '';
       }
@@ -106,12 +153,22 @@ export async function startConsistencyTest(req: Request, res: Response, next: Ne
       };
     };
 
-    const result = await service.startConsistencyTest(
+    const resolvedIsSecurity = mode === 'batch'
+      ? !!isSecurity || testCases.some(tc => tc.is_security_test)
+      : !!testCases[0].is_security_test;
+
+    const result = await service.startConsistencyTestMulti(
       agentId,
-      testCaseId,
+      testCases,
       effectiveUserId,
       iterations,
-      callAgent
+      callAgent,
+      {
+        mode: mode === 'batch' ? 'batch' : 'single',
+        isSecurity: resolvedIsSecurity,
+        batchId: resolvedBatchId,
+        batchName: resolvedBatchName,
+      }
     );
 
     res.status(201).json(result);

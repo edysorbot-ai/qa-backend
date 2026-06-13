@@ -256,7 +256,7 @@ export async function proposeAgentPromptAmendment(args: {
             tc.scenario as tc_scenario,
             tc.expected_behavior as tc_expected,
             tc.agent_id,
-            ag.system_prompt as agent_prompt
+            COALESCE(ag.prompt, ag.config->>'prompt', ag.config->'agent'->>'prompt') as agent_prompt
      FROM test_results tr
      LEFT JOIN test_cases tc ON tr.test_case_id = tc.id
      LEFT JOIN agents ag ON tc.agent_id = ag.id
@@ -271,7 +271,7 @@ export async function proposeAgentPromptAmendment(args: {
     throw new Error('No agent linked to this test result; cannot amend prompt');
   }
   if (!row.agent_prompt) {
-    throw new Error('Agent has no system_prompt to amend');
+    throw new Error('Agent has no prompt configured. Sync the agent from its provider or set a prompt on the agent before improving the test agent.');
   }
 
   // Render the failing transcript so the LLM can read it.
@@ -396,7 +396,7 @@ export async function applyAgentPromptAmendment(args: {
   if (row.status === 'rejected') throw new Error('Amendment was rejected');
 
   await pool.query(
-    `UPDATE agents SET system_prompt = $1, updated_at = NOW() WHERE id = $2`,
+    `UPDATE agents SET prompt = $1, updated_at = NOW() WHERE id = $2`,
     [row.amended_prompt, row.agent_id],
   );
   await pool.query(

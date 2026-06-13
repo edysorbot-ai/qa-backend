@@ -30,7 +30,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
       [agentId]
     );
 
-    const systemPrompt = agent.system_prompt || agent.config?.systemPrompt || '';
+    const systemPrompt = agent.prompt || agent.system_prompt || agent.config?.systemPrompt || '';
     const avgTranscriptLength = resultsQuery.rows.reduce((sum: number, r: any) => {
       const t = r.transcript || '';
       return sum + (typeof t === 'string' ? t.length : JSON.stringify(t).length);

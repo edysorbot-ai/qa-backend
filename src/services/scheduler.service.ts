@@ -4,6 +4,8 @@ import { emailNotificationService } from "./emailNotification.service";
 import { pool } from "../db";
 import { logger } from "./logger.service";
 import { deductCredits, FeatureKeys } from "../middleware/credits.middleware";
+import { runOutageChecksForAllUsers } from "./outage-monitoring.service";
+import { runDailyRlaifSweep } from "./rlaif.service";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -51,6 +53,27 @@ export class SchedulerService {
     this.intervalId = setInterval(() => {
       this.checkAndRunDueTests();
     }, this.checkIntervalMs);
+
+    // Outage checks every 15 minutes
+    const FIFTEEN_MIN = 15 * 60 * 1000;
+    setInterval(() => {
+      runOutageChecksForAllUsers().catch((e) => logger.error?.(`[scheduler] outage tick failed: ${e?.message}`));
+    }, FIFTEEN_MIN);
+    // Run once shortly after startup so the status page has data quickly
+    setTimeout(() => {
+      runOutageChecksForAllUsers().catch(() => {});
+    }, 30 * 1000);
+
+    // RLAIF daily sweep — fires at the top of every hour and runs once a day
+    // around 00:30 server time (idempotent: each run inserts a new digest row).
+    let lastRlaifDay = -1;
+    setInterval(() => {
+      const now = new Date();
+      if (now.getUTCHours() === 0 && now.getUTCMinutes() >= 30 && now.getUTCDate() !== lastRlaifDay) {
+        lastRlaifDay = now.getUTCDate();
+        runDailyRlaifSweep().catch((e) => logger.error?.(`[scheduler] rlaif sweep failed: ${e?.message}`));
+      }
+    }, 5 * 60 * 1000);
 
     logger.scheduler.info(`Scheduler started, checking every ${this.checkIntervalMs / 1000} seconds`);
   }

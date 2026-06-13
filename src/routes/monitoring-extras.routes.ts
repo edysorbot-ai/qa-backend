@@ -14,6 +14,8 @@ import { Router, Request, Response } from 'express';
 import pool from '../db';
 import { logger } from '../services/logger.service';
 import { aggregateLatencyAttribution } from '../services/latency-attribution.service';
+import { runOutageChecksForAllUsers, getUptimeRollup } from '../services/outage-monitoring.service';
+import { runRlaifForUser } from '../services/rlaif.service';
 
 const router = Router();
 
@@ -418,6 +420,112 @@ router.put('/notification-settings', async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (err: any) {
     logger.error(`[MonitoringExtras] put notification-settings error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ===== Status-page style uptime (90-day rollup) =====
+router.get('/uptime', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const days = Math.min(180, Math.max(1, Number((req.query.days as string) || '90')));
+    const data = await getUptimeRollup(userId, days);
+    res.json({ success: true, windowDays: days, ...data });
+  } catch (err: any) {
+    logger.error(`[MonitoringExtras] uptime error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Manual trigger of an immediate health sweep for this user's integrations.
+router.post('/uptime/run-now', async (_req: Request, res: Response) => {
+  try {
+    const inserted = await runOutageChecksForAllUsers();
+    res.json({ success: true, inserted });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ===== RLAIF: list + run-now =====
+router.get('/rlaif', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const limit = Math.min(50, Math.max(1, Number((req.query.limit as string) || '10')));
+    const rows = await pool.query(
+      `SELECT id, agent_id, scope, period_start, period_end,
+              total_evaluated, total_failed, categories, recommendations, created_at
+         FROM rlaif_runs
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2`,
+      [userId, limit],
+    );
+    res.json({ success: true, runs: rows.rows });
+  } catch (err: any) {
+    logger.error(`[MonitoringExtras] rlaif list error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/rlaif/run-now', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { frequency = 'daily', agentId } = req.body || {};
+    if (!['hourly', 'daily', 'weekly', 'monthly', 'quarterly'].includes(frequency)) {
+      return res.status(400).json({ success: false, error: 'invalid frequency' });
+    }
+    const out = await runRlaifForUser(userId, frequency, agentId || undefined);
+    res.json({ success: true, run: out });
+  } catch (err: any) {
+    logger.error(`[MonitoringExtras] rlaif run error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ===== Turn / peak / average latency rollup for a single call =====
+router.get('/calls/:callId/latency-stats', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { callId } = req.params;
+    const row = await pool.query(
+      `SELECT transcript FROM production_calls WHERE id = $1 AND user_id = $2`,
+      [callId, userId],
+    );
+    if (row.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'call not found' });
+    }
+    let turns = row.rows[0].transcript;
+    if (typeof turns === 'string') {
+      try { turns = JSON.parse(turns); } catch { turns = []; }
+    }
+    const arr: any[] = Array.isArray(turns) ? turns : [];
+    const turnLatencies: number[] = [];
+    for (let i = 0; i < arr.length; i++) {
+      const t = arr[i];
+      const role = t?.role || t?.speaker;
+      if (role && role !== 'agent' && role !== 'assistant') continue;
+      const ms = Number(t?.duration_ms || t?.durationMs || t?.latency_ms || t?.latencyMs || 0);
+      if (ms > 0) turnLatencies.push(ms);
+    }
+    const sorted = [...turnLatencies].sort((a, b) => a - b);
+    const sum = sorted.reduce((a, b) => a + b, 0);
+    const avg = sorted.length ? Math.round(sum / sorted.length) : 0;
+    const peak = sorted.length ? sorted[sorted.length - 1] : 0;
+    const pct = (p: number) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))] : 0;
+
+    res.json({
+      success: true,
+      callId,
+      turnCount: turnLatencies.length,
+      avgTurnLatencyMs: avg,
+      peakTurnLatencyMs: peak,
+      p50: pct(50),
+      p95: pct(95),
+      p99: pct(99),
+    });
+  } catch (err: any) {
+    logger.error(`[MonitoringExtras] latency-stats error: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });

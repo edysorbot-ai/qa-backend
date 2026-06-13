@@ -24,7 +24,7 @@ export async function executeBatchedTestRunFromCI(testRunId: string, agentId: st
     }
 
     const agent = agentQuery.rows[0];
-    const agentPrompt = agent.system_prompt || '';
+    const agentPrompt = agent.prompt || agent.system_prompt || agent.config?.systemPrompt || '';
     const agentConfig = {
       provider: agent.provider || 'elevenlabs',
       agentId: agent.provider_agent_id || agent.id,
@@ -79,8 +79,12 @@ export async function executeBatchedTestRunFromCI(testRunId: string, agentId: st
     );
 
     logger.info(`[CI/CD] Test run ${testRunId} completed: ${passed} passed, ${failed} failed`);
-  } catch (error: any) {
+    } catch (error: any) {
     logger.error(`[CI/CD] Execution failed: ${error.message}`);
-    await pool.query(`UPDATE test_runs SET status = 'failed' WHERE id = $1`, [testRunId]);
+    await pool.query(
+      `UPDATE test_runs SET status = 'failed', error_message = $2 WHERE id = $1`,
+      [testRunId, String(error?.message || error).slice(0, 1000)],
+    );
+    throw error;
   }
 }

@@ -60,6 +60,21 @@ export class AgentController {
         return res.status(400).json({ error: 'Integration ID, name, and provider are required' });
       }
 
+      // Prevent duplicate connections of the same provider agent for this user
+      if (external_agent_id) {
+        const existing = await agentService.findByUserAndExternal(
+          effectiveUserId,
+          provider,
+          external_agent_id
+        );
+        if (existing) {
+          return res.status(409).json({
+            error: 'This agent is already connected.',
+            agent: existing,
+          });
+        }
+      }
+
       const agent = await agentService.create({
         user_id: effectiveUserId,
         integration_id,

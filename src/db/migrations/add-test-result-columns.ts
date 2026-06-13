@@ -20,11 +20,18 @@ export const addTestResultColumns = async () => {
       // Column might already be nullable
     });
 
-    // Drop the foreign key constraint if it exists
+    // Drop the foreign key constraint if it exists, then re-add as
+    // ON DELETE SET NULL so orphan rows aren't possible while still allowing
+    // test_case_id to be NULL for non-test-case-backed results (CI/CD, etc.)
     await query(`
-      ALTER TABLE test_results 
+      ALTER TABLE test_results
       DROP CONSTRAINT IF EXISTS test_results_test_case_id_fkey
     `);
+    await query(`
+      ALTER TABLE test_results
+      ADD CONSTRAINT test_results_test_case_id_fkey
+      FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE SET NULL
+    `).catch((e) => console.warn('[add-test-result-columns] FK re-add skip:', e?.message));
 
     console.log('✅ Test results table updated successfully');
   } catch (error) {

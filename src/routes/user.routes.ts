@@ -105,7 +105,8 @@ router.get('/subscription', async (req: any, res) => {
 // ==================== Referral Endpoints ====================
 
 // GET /api/users/referral/validate/:code - Validate a referral code (public endpoint)
-router.get('/referral/validate/:code', async (req: any, res) => {
+import { sensitiveOperationRateLimiter as _refRateLimit } from '../middleware/rateLimit.middleware';
+router.get('/referral/validate/:code', _refRateLimit, async (req: any, res) => {
   try {
     const { code } = req.params;
     if (!code) {

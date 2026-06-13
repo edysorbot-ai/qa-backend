@@ -11,6 +11,21 @@ const router = Router();
 // GET /api/test-cases/csv-template - Download CSV template for importing test cases
 router.get('/csv-template', testCaseController.csvTemplate.bind(testCaseController));
 
+// GET /api/test-cases/security-suite - Catalog of 75 starter security tests
+router.get(
+  '/security-suite',
+  testCaseController.securitySuiteCatalog.bind(testCaseController),
+);
+
+// POST /api/test-cases/security-suite/add - Attach selected catalog tests to an agent
+router.post(
+  '/security-suite/add',
+  ...requireSubscriptionAndCredits(FeatureKeys.TEST_CASE_CREATE, (req) => {
+    return Array.isArray(req.body?.test_ids) ? req.body.test_ids.length : 1;
+  }),
+  testCaseController.addFromSecuritySuite.bind(testCaseController),
+);
+
 // GET /api/test-cases - Get all test cases (optionally filtered by agent_id)
 router.get('/', testCaseController.getAll.bind(testCaseController));
 

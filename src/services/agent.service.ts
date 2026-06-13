@@ -12,10 +12,29 @@ export class AgentService {
 
   async findByUserId(userId: string): Promise<Agent[]> {
     const result = await query(
-      'SELECT * FROM agents WHERE user_id = $1 ORDER BY created_at DESC',
+      `SELECT a.*,
+              COALESCE((SELECT COUNT(*)::int FROM test_runs tr WHERE tr.agent_id = a.id), 0) AS test_run_count
+       FROM agents a
+       WHERE a.user_id = $1
+       ORDER BY a.created_at DESC`,
       [userId]
     );
     return result.rows;
+  }
+
+  async findByUserAndExternal(
+    userId: string,
+    provider: string,
+    externalAgentId: string
+  ): Promise<Agent | null> {
+    if (!externalAgentId) return null;
+    const result = await query(
+      `SELECT * FROM agents
+       WHERE user_id = $1 AND provider = $2 AND external_agent_id = $3
+       LIMIT 1`,
+      [userId, provider, externalAgentId]
+    );
+    return result.rows[0] || null;
   }
 
   async findByIntegrationId(integrationId: string): Promise<Agent[]> {

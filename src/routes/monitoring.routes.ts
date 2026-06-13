@@ -724,7 +724,7 @@ router.post('/polling/:agentId/enable', async (req: AuthenticatedRequest, res: R
     }
 
     // Validate interval (min 15 seconds, max 300 seconds)
-    const interval = Math.max(15, Math.min(300, intervalSeconds));
+    const interval = Math.max(15, Math.min(604800, intervalSeconds));
 
     // Generate webhook URL for fallback (but we'll use polling)
     const baseUrl = process.env.WEBHOOK_BASE_URL || process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
