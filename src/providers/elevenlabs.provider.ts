@@ -374,21 +374,7 @@ export class ElevenLabsProvider implements VoiceProviderClient {
         }
       }
       
-      console.log(`[ElevenLabs] Returning ${result.length} attached + ${result.length === 0 ? (kbResponse.documents?.length || 0) : 0} workspace knowledge base items for agent ${agentId}`);
-
-      // Fallback: if the agent has NO KB attached but the workspace has
-      // documents, surface those as "available in workspace" so the user
-      // can see them and knows to attach them to this agent in ElevenLabs.
-      if (result.length === 0 && kbResponse.documents && kbResponse.documents.length > 0) {
-        for (const doc of kbResponse.documents) {
-          result.push({
-            ...doc,
-            name: doc.name || doc.file_name || 'Unknown Document',
-            type: doc.type || 'file',
-            metadata: { ...(doc.metadata || {}), source: 'workspace', not_attached_to_agent: true },
-          });
-        }
-      }
+      console.log(`[ElevenLabs] Returning ${result.length} knowledge base items for agent ${agentId}`);
 
       return result;
     } catch (error: any) {
