@@ -373,6 +373,28 @@ export class ElevenLabsProvider implements VoiceProviderClient {
           });
         }
       }
+
+      // Reverse lookup: also include any workspace doc whose `dependent_agents`
+      // references this agent. This catches docs attached via the workspace UI
+      // (so they may not appear in the agent's prompt.knowledge_base config).
+      if (kbResponse.documents && Array.isArray(kbResponse.documents)) {
+        for (const doc of kbResponse.documents) {
+          const dependents: any[] = doc.dependent_agents || doc.access_info?.dependent_agents || [];
+          const matches = Array.isArray(dependents) && dependents.some((d: any) => {
+            const did = typeof d === 'string' ? d : (d?.agent_id || d?.id);
+            return did === agentId;
+          });
+          if (matches && !seenIds.has(doc.id)) {
+            seenIds.add(doc.id);
+            result.push({
+              ...doc,
+              name: doc.name || doc.file_name || 'Unknown Document',
+              type: doc.type || 'file',
+              metadata: { ...(doc.metadata || {}), source: 'dependent_agents' },
+            });
+          }
+        }
+      }
       
       console.log(`[ElevenLabs] Returning ${result.length} knowledge base items for agent ${agentId}`);
 
