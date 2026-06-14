@@ -210,6 +210,20 @@ class CallPollingService {
             }
           }
 
+          // Stable-sort by timestamp so overlapping turns (e.g. multiple turns
+          // sharing the same time_in_call_secs) stay in the original ElevenLabs
+          // order while gross out-of-order entries get fixed.
+          const indexed = transcript.map((t, i) => ({ t, i }));
+          indexed.sort((a, b) => {
+            const ta = typeof a.t.timestamp === 'number' ? a.t.timestamp : Number.MAX_SAFE_INTEGER;
+            const tb = typeof b.t.timestamp === 'number' ? b.t.timestamp : Number.MAX_SAFE_INTEGER;
+            return ta === tb ? a.i - b.i : ta - tb;
+          });
+          transcript.length = 0;
+          for (const x of indexed) transcript.push(x.t);
+          // Rebuild transcript_text after sorting
+          transcriptText = transcript.map(t => `${t.role}: ${t.content}`).join('\n');
+
           // Extract tool calls
           const toolCalls = Array.isArray(detail.tool_calls) 
             ? detail.tool_calls.map((tc: any) => ({
