@@ -512,6 +512,26 @@ export class BatchedTestExecutorService {
       let currentTestCaseIndex = 0;
       let testedCases = new Set<string>();
       let lastActivity = Date.now();
+
+      // Generate TTS in the format the agent's WS expects. Sending the wrong
+      // format causes WS close 1008 ("buffer size must be a multiple of
+      // element size") because PCM16 requires 2-byte aligned bytes whereas
+      // µ-law is 1-byte.
+      const generateTTSForAgent = async (text: string) => {
+        if (expectedInputFormat.startsWith('pcm_')) {
+          return ttsService.generateSpeechPCM({ text });
+        }
+        return ttsService.generateSpeechUlaw({ text });
+      };
+      const buildKeepalive = (): string => {
+        // 100ms of silence in the negotiated format
+        if (expectedInputFormat.startsWith('pcm_')) {
+          // 16-bit PCM silence = zeros, 16000 samples/sec * 2 bytes * 0.1s = 3200 bytes
+          return Buffer.alloc(3200, 0).toString('base64');
+        }
+        // µ-law silence byte is 0xFF; 8000 bytes/sec * 0.1s = 800 bytes
+        return Buffer.alloc(800, 0xFF).toString('base64');
+      };
       
       console.log(`[BatchedExecutor] Config: minTurns=${minTurns}, maxTurns=${maxTurns}, testCases=${batch.testCases.length}`);
       
@@ -545,7 +565,7 @@ export class BatchedTestExecutorService {
           if (!conversationComplete && ws.readyState === WebSocket.OPEN) {
             try {
               // Send minimal silence to keep connection alive
-              ws.send(JSON.stringify({ user_audio_chunk: Buffer.alloc(160, 0xFF).toString('base64') }));
+              ws.send(JSON.stringify({ user_audio_chunk: buildKeepalive() }));
             } catch (e) {
               // Ignore errors
             }
@@ -584,7 +604,7 @@ export class BatchedTestExecutorService {
             transcript.push({ role: 'test_caller', content: goodbye, timestamp: Date.now() });
             
             try {
-              const ttsResult = await ttsService.generateSpeechUlaw({ text: goodbye });
+              const ttsResult = await generateTTSForAgent(goodbye);
               // Add test caller audio to recording
               audioChunks.push(ttsResult.audioBuffer);
               await this.sendAudioToAgent(ws, ttsResult.audioBuffer);
@@ -620,7 +640,7 @@ export class BatchedTestExecutorService {
             
             // Send audio
             try {
-              const ttsResult = await ttsService.generateSpeechUlaw({ text: response.text });
+              const ttsResult = await generateTTSForAgent(response.text);
               // Add test caller audio to recording
               audioChunks.push(ttsResult.audioBuffer);
               await this.sendAudioToAgent(ws, ttsResult.audioBuffer);
@@ -670,7 +690,7 @@ export class BatchedTestExecutorService {
                 setTimeout(async () => {
                   try {
                     const greeting = "Hello?";
-                    const ttsResult = await ttsService.generateSpeechUlaw({ text: greeting });
+                    const ttsResult = await generateTTSForAgent(greeting);
                     // Add test caller audio to recording
                     audioChunks.push(ttsResult.audioBuffer);
                     await this.sendAudioToAgent(ws, ttsResult.audioBuffer);
