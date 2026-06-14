@@ -1,28 +1,19 @@
 /**
- * Data Capture Validation Service
+ * Data Capture Validation Service (deterministic)
  *
- * Validates that structured/numerical values spoken by the user were captured
- * by ASR and then confirmed back correctly by the LLM agent.
+ * Compares what the user said vs what the agent confirmed back for
+ * structured values (phone, date/time, currency, card, email, OTP, etc).
+ *
+ * No LLM - pure deterministic string extraction so values are always
+ * grounded in the transcript and never hallucinated.
  *
  * Pipeline:
- *   1. AUDIO INPUT      - what the user said (best signal: original spoken phrase)
- *   2. ASR CAPTURE      - what the transcript shows (turn.role === 'user')
- *   3. LLM CONFIRMATION - what the agent confirmed back (turn.role === 'agent')
+ *   1. AUDIO INPUT      = user turn verbatim
+ *   2. ASR CAPTURE      = digit-normalised form of (1)
+ *   3. LLM CONFIRMATION = digit-normalised form of agent's read-back
  *
- * Failure detected when (1) and (3) disagree, OR (2) and (3) disagree.
- *
- * We do a two-stage pass:
- *   a) Cheap regex extraction of every candidate value on each turn (phone,
- *      date, time, currency, card, email, generic numbers, budget, OTP, etc).
- *   b) LLM cross-check that compares user-said vs agent-confirmed values and
- *      returns a list of `DataCaptureMismatch` records.
- *
- * Designed to feed into the existing realtime-analysis pipeline.
+ * Mismatch = (2) != (3) after normalisation.
  */
-
-import OpenAI from 'openai';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export type FieldType =
   | 'phone'
@@ -40,11 +31,11 @@ export type FieldType =
 
 export interface DataCaptureMismatch {
   fieldType: FieldType;
-  fieldLabel: string;          // human label e.g. "Phone number"
-  userSaid: string;            // raw user turn excerpt
-  asrCaptured: string;         // normalised value as captured by ASR
-  agentConfirmed: string;      // normalised value as confirmed back by agent
-  match: boolean;              // true if asrCaptured === agentConfirmed
+  fieldLabel: string;
+  userSaid: string;
+  asrCaptured: string;
+  agentConfirmed: string;
+  match: boolean;
   severity: 'critical' | 'major' | 'minor';
   userTurnIndex?: number;
   agentTurnIndex?: number;
@@ -55,241 +46,279 @@ export interface DataCaptureReport {
   fields: DataCaptureMismatch[];
   totalChecked: number;
   mismatchCount: number;
-  validationScore: number;     // 0-100 (100 = all matched)
+  validationScore: number;
 }
 
-interface Turn {
-  role: 'agent' | 'user' | 'system' | string;
-  content: string;
-}
+interface Turn { role: string; content: string }
 
-/* ---------------- Regex extraction ---------------- */
+/* ------------------- digit expansion ------------------- */
 
-const NUMBER_WORDS: Record<string, string> = {
-  zero: '0', oh: '0', o: '0',
+const DIGITS: Record<string, string> = {
+  zero: '0', oh: '0', o: '0', nought: '0',
   one: '1', two: '2', three: '3', four: '4', five: '5',
   six: '6', seven: '7', eight: '8', nine: '9',
-  ten: '10', eleven: '11', twelve: '12', thirteen: '13',
-  fourteen: '14', fifteen: '15', sixteen: '16', seventeen: '17',
-  eighteen: '18', nineteen: '19', twenty: '20', thirty: '30',
-  forty: '40', fifty: '50', sixty: '60', seventy: '70', eighty: '80', ninety: '90',
-  hundred: '100', thousand: '1000', lakh: '100000', million: '1000000', crore: '10000000',
 };
 
-/** Expand "triple five" / "double zero" / "five five five" etc. into digits. */
-function expandSpokenDigits(text: string): string {
-  let out = text.toLowerCase();
-  // triple X / double X / dabbu X
-  out = out.replace(/\b(triple|treble)\s+(\w+)/g, (_m, _q, w) =>
-    NUMBER_WORDS[w] ? `${NUMBER_WORDS[w]}${NUMBER_WORDS[w]}${NUMBER_WORDS[w]}` : _m
-  );
-  out = out.replace(/\b(double|dabbu)\s+(\w+)/g, (_m, _q, w) =>
-    NUMBER_WORDS[w] ? `${NUMBER_WORDS[w]}${NUMBER_WORDS[w]}` : _m
-  );
-  // word-by-word digits
-  out = out.replace(/\b(zero|one|two|three|four|five|six|seven|eight|nine|oh)\b/g,
-    (m) => NUMBER_WORDS[m] || m);
-  return out;
+/** Expand "triple X" / "double X" / spoken digit words into a digit string. */
+function expandSpokenToDigits(text: string): string {
+  if (!text) return '';
+  let s = text.toLowerCase();
+  // triple X
+  s = s.replace(/\b(triple|treble)[\s-]+(zero|oh|one|two|three|four|five|six|seven|eight|nine)\b/g,
+    (_m, _q, w) => (DIGITS[w] || '').repeat(3));
+  // double X
+  s = s.replace(/\b(double)[\s-]+(zero|oh|one|two|three|four|five|six|seven|eight|nine)\b/g,
+    (_m, _q, w) => (DIGITS[w] || '').repeat(2));
+  // word digits
+  s = s.replace(/\b(zero|oh|nought|one|two|three|four|five|six|seven|eight|nine)\b/g,
+    (m) => DIGITS[m] || '');
+  return s;
 }
 
-function normaliseDigits(s: string): string {
-  return (s || '').replace(/[^\d]/g, '');
-}
-
-interface Extracted { type: FieldType; raw: string; normalised: string }
-
-function extractFromText(raw: string): Extracted[] {
-  if (!raw) return [];
-  const out: Extracted[] = [];
-  const expanded = expandSpokenDigits(raw);
-
-  // Email
-  const emailRe = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
-  for (const m of raw.matchAll(emailRe)) {
-    out.push({ type: 'email', raw: m[0], normalised: m[0].toLowerCase() });
+/** Extract all digit runs of length>=minLen. */
+function extractDigitRuns(text: string, minLen = 4): string[] {
+  const expanded = expandSpokenToDigits(text);
+  const digitsOnly = expanded.replace(/[^\d\s]/g, ' ').replace(/\s+/g, ' ');
+  // Collapse runs of "digit (whitespace digit)+" into a single number.
+  // Repeating replace handles >2 spaced digits in a row.
+  let compact = digitsOnly;
+  let prev = '';
+  while (prev !== compact) {
+    prev = compact;
+    compact = compact.replace(/(\d)\s+(\d)/g, '$1$2');
   }
+  const runs: string[] = [];
+  const re = /\d+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(compact))) {
+    if (m[0].length >= minLen) runs.push(m[0]);
+  }
+  return runs;
+}
 
-  // Credit card (13-19 digits, allow spaces/dashes)
-  const cardRe = /\b(?:\d[ -]?){13,19}\b/g;
-  for (const m of expanded.matchAll(cardRe)) {
-    const d = normaliseDigits(m[0]);
-    if (d.length >= 13 && d.length <= 19) {
-      out.push({ type: 'card', raw: m[0], normalised: d });
+function pickClosest(target: string, candidates: string[]): { value: string; distance: number } | null {
+  if (candidates.length === 0) return null;
+  let best = candidates[0];
+  let bestDist = levenshtein(target, best);
+  for (let i = 1; i < candidates.length; i++) {
+    const d = levenshtein(target, candidates[i]);
+    if (d < bestDist) { best = candidates[i]; bestDist = d; }
+  }
+  return { value: best, distance: bestDist };
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
     }
   }
+  return dp[a.length][b.length];
+}
 
-  // Phone number (7-15 digits, common international forms)
-  const phoneRe = /(?:\+?\d{1,3}[ -]?)?(?:\(?\d{2,4}\)?[ -]?){1,4}\d{3,5}/g;
-  for (const m of expanded.matchAll(phoneRe)) {
-    const d = normaliseDigits(m[0]);
-    if (d.length >= 7 && d.length <= 15) {
-      // skip if already captured as card
-      if (!out.find(o => o.type === 'card' && o.normalised === d)) {
-        out.push({ type: 'phone', raw: m[0], normalised: d });
+/* ------------------- field-specific extractors ------------------- */
+
+const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/i;
+const CURRENCY_RE = /(?:[$€£₹¥]\s*[\d,]+(?:\.\d+)?|\b[\d,]+(?:\.\d+)?\s*(?:dollars?|rupees?|usd|inr|rs|lakh|crore|million|billion|k)\b)/i;
+const DATE_RE = /\b(?:\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(?:,?\s*\d{4})?|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\s+\d{4})?)\b/i;
+const TIME_RE = /\b(?:\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)\b/i;
+
+function classifyDigitRun(run: string, context: string): { type: FieldType; label: string; severity: 'critical' | 'major' | 'minor' } {
+  const ctx = context.toLowerCase();
+  if (/email/.test(ctx)) return { type: 'email', label: 'Email address', severity: 'critical' };
+  if (/(card|cvv|cvc|expir)/.test(ctx)) return { type: 'card', label: 'Card number', severity: 'critical' };
+  if (/(otp|verification|pin|code)/.test(ctx)) return { type: 'otp', label: 'OTP / verification code', severity: 'critical' };
+  if (/(phone|mobile|cell|contact number|number to (?:reach|call))/.test(ctx)) return { type: 'phone', label: 'Customer phone number', severity: 'critical' };
+  if (run.length >= 13 && run.length <= 19) return { type: 'card', label: 'Card number', severity: 'critical' };
+  if (run.length >= 7 && run.length <= 15) return { type: 'phone', label: 'Phone number', severity: 'critical' };
+  return { type: 'numeric', label: 'Numeric value', severity: 'minor' };
+}
+
+/* ------------------- main validator ------------------- */
+
+const READBACK_WINDOW = 4;
+const MATCH_TOLERANCE = 0; // exact match required for digit strings
+
+export async function validateDataCapture(transcript: Turn[]): Promise<DataCaptureReport> {
+  const fields: DataCaptureMismatch[] = [];
+  if (!transcript || transcript.length === 0) {
+    return { fields, totalChecked: 0, mismatchCount: 0, validationScore: 100 };
+  }
+
+  // Track which user-turn:value pairs we've already evaluated
+  const seen = new Set<string>();
+
+  for (let i = 0; i < transcript.length; i++) {
+    const turn = transcript[i];
+    if (turn.role !== 'user') continue;
+    const userText = turn.content || '';
+    if (!userText.trim()) continue;
+
+    // Build the agent-context "what was asked just before" to help label fields
+    const prevAgent = transcript.slice(Math.max(0, i - 2), i)
+      .filter(t => t.role === 'agent')
+      .map(t => t.content).join(' ');
+
+    /* ----- numeric / phone / card / otp ----- */
+    const userDigitRuns = extractDigitRuns(userText, 4);
+    for (const run of userDigitRuns) {
+      const key = `${i}:${run}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      // Look ahead for an agent read-back
+      let agentTurnIdx: number | undefined;
+      let agentValue = '';
+      let bestDist = Infinity;
+      for (let j = i + 1; j < Math.min(transcript.length, i + 1 + READBACK_WINDOW); j++) {
+        if (transcript[j].role !== 'agent') continue;
+        const agentRuns = extractDigitRuns(transcript[j].content || '', Math.max(4, run.length - 2));
+        // Restrict to runs of similar length (within +/-2 of user value)
+        const similar = agentRuns.filter(r => Math.abs(r.length - run.length) <= 2);
+        const pick = pickClosest(run, similar);
+        if (pick && pick.distance < bestDist) {
+          bestDist = pick.distance;
+          agentValue = pick.value;
+          agentTurnIdx = j;
+        }
+      }
+
+      // No read-back in window -> skip (only flag when we have a comparison)
+      if (!agentValue) continue;
+
+      const cls = classifyDigitRun(run, prevAgent + ' ' + userText);
+      const match = bestDist <= MATCH_TOLERANCE;
+      fields.push({
+        fieldType: cls.type,
+        fieldLabel: cls.label,
+        userSaid: userText.trim(),
+        asrCaptured: run,
+        agentConfirmed: agentValue,
+        match,
+        severity: match ? 'minor' : cls.severity,
+        userTurnIndex: i,
+        agentTurnIndex: agentTurnIdx,
+        explanation: match
+          ? 'Agent read back the value correctly.'
+          : `Mismatch: agent confirmed "${agentValue}" but user said "${run}" (edit distance ${bestDist}).`,
+      });
+    }
+
+    /* ----- email ----- */
+    const emailMatch = userText.match(EMAIL_RE);
+    if (emailMatch) {
+      const userEmail = emailMatch[0].toLowerCase();
+      const key = `${i}:email:${userEmail}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        let agentEmail = '';
+        let agentTurnIdx: number | undefined;
+        for (let j = i + 1; j < Math.min(transcript.length, i + 1 + READBACK_WINDOW); j++) {
+          if (transcript[j].role !== 'agent') continue;
+          const m = transcript[j].content?.match(EMAIL_RE);
+          if (m) { agentEmail = m[0].toLowerCase(); agentTurnIdx = j; break; }
+        }
+        if (agentEmail) {
+          const match = userEmail === agentEmail;
+          fields.push({
+            fieldType: 'email',
+            fieldLabel: 'Email address',
+            userSaid: userText.trim(),
+            asrCaptured: userEmail,
+            agentConfirmed: agentEmail,
+            match,
+            severity: match ? 'minor' : 'critical',
+            userTurnIndex: i,
+            agentTurnIndex: agentTurnIdx,
+            explanation: match ? 'Agent confirmed the email correctly.' : 'Agent confirmed a different email address.',
+          });
+        }
+      }
+    }
+
+    /* ----- currency / budget ----- */
+    const currMatch = userText.match(CURRENCY_RE);
+    if (currMatch) {
+      const key = `${i}:curr:${currMatch[0]}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        let agentCurr = '';
+        let agentTurnIdx: number | undefined;
+        for (let j = i + 1; j < Math.min(transcript.length, i + 1 + READBACK_WINDOW); j++) {
+          if (transcript[j].role !== 'agent') continue;
+          const m = transcript[j].content?.match(CURRENCY_RE);
+          if (m) { agentCurr = m[0]; agentTurnIdx = j; break; }
+        }
+        if (agentCurr) {
+          // Compare normalised numeric portion
+          const userNum = (currMatch[0].match(/[\d,]+(?:\.\d+)?/) || [''])[0].replace(/,/g, '');
+          const agentNum = (agentCurr.match(/[\d,]+(?:\.\d+)?/) || [''])[0].replace(/,/g, '');
+          const match = !!userNum && userNum === agentNum;
+          fields.push({
+            fieldType: 'currency',
+            fieldLabel: 'Currency amount',
+            userSaid: userText.trim(),
+            asrCaptured: currMatch[0],
+            agentConfirmed: agentCurr,
+            match,
+            severity: match ? 'minor' : 'major',
+            userTurnIndex: i,
+            agentTurnIndex: agentTurnIdx,
+            explanation: match ? 'Agent confirmed the amount correctly.' : `Agent confirmed "${agentNum}" but user said "${userNum}".`,
+          });
+        }
+      }
+    }
+
+    /* ----- date / time ----- */
+    for (const [re, type, label] of [
+      [DATE_RE, 'date', 'Date'] as const,
+      [TIME_RE, 'time', 'Time'] as const,
+    ]) {
+      const m = userText.match(re);
+      if (!m) continue;
+      const key = `${i}:${type}:${m[0]}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let agentVal = '';
+      let agentTurnIdx: number | undefined;
+      for (let j = i + 1; j < Math.min(transcript.length, i + 1 + READBACK_WINDOW); j++) {
+        if (transcript[j].role !== 'agent') continue;
+        const mm = transcript[j].content?.match(re);
+        if (mm) { agentVal = mm[0]; agentTurnIdx = j; break; }
+      }
+      if (agentVal) {
+        const norm = (s: string) => s.toLowerCase().replace(/\s+/g, '').replace(/[,.]/g, '');
+        const match = norm(m[0]) === norm(agentVal);
+        fields.push({
+          fieldType: type as FieldType,
+          fieldLabel: label,
+          userSaid: userText.trim(),
+          asrCaptured: m[0],
+          agentConfirmed: agentVal,
+          match,
+          severity: match ? 'minor' : 'major',
+          userTurnIndex: i,
+          agentTurnIndex: agentTurnIdx,
+          explanation: match ? `Agent confirmed the ${type} correctly.` : `Agent confirmed a different ${type}.`,
+        });
       }
     }
   }
 
-  // Currency / budget
-  const currencyRe = /(?:[$€£₹¥]|usd|eur|gbp|inr|rs\.?|rupees?|dollars?|euros?)\s*([\d,]+(?:\.\d+)?)|\b([\d,]+(?:\.\d+)?)\s*(?:dollars?|rupees?|usd|inr|rs|lakh|crore|k|million|billion)\b/gi;
-  for (const m of raw.matchAll(currencyRe)) {
-    const num = (m[1] || m[2] || '').replace(/,/g, '');
-    if (num) out.push({ type: 'currency', raw: m[0], normalised: num });
-  }
+  const mismatchCount = fields.filter(f => !f.match).length;
+  const totalChecked = fields.length;
+  const validationScore = totalChecked > 0
+    ? Math.round(((totalChecked - mismatchCount) / totalChecked) * 100)
+    : 100;
 
-  // Date - 12/05/2024, 2024-05-12, May 12 2024, 12 May etc.
-  const dateRe = /\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(?:,?\s*\d{4})?|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\s+\d{4})?)\b/gi;
-  for (const m of raw.matchAll(dateRe)) {
-    out.push({ type: 'date', raw: m[0], normalised: m[0].toLowerCase().replace(/\s+/g, ' ') });
-  }
-
-  // Time - 5pm, 14:30, half past three
-  const timeRe = /\b(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)\b/gi;
-  for (const m of raw.matchAll(timeRe)) {
-    out.push({ type: 'time', raw: m[0], normalised: m[0].toLowerCase().replace(/\s+/g, '') });
-  }
-
-  // OTP / verification code (3-8 digit standalone)
-  const otpRe = /\b(?:otp|code|pin|verification)[^\d]{0,15}(\d{3,8})\b/gi;
-  for (const m of raw.matchAll(otpRe)) {
-    out.push({ type: 'otp', raw: m[0], normalised: m[1] });
-  }
-
-  // Generic standalone numbers (length 3+) - useful fallback
-  const numRe = /\b\d{3,}\b/g;
-  for (const m of expanded.matchAll(numRe)) {
-    const d = m[0];
-    if (!out.find(o => o.normalised === d)) {
-      out.push({ type: 'numeric', raw: m[0], normalised: d });
-    }
-  }
-
-  return out;
-}
-
-function extractCandidatesByRole(transcript: Turn[]): {
-  userExtracts: Array<Extracted & { turnIndex: number }>;
-  agentExtracts: Array<Extracted & { turnIndex: number }>;
-} {
-  const userExtracts: Array<Extracted & { turnIndex: number }> = [];
-  const agentExtracts: Array<Extracted & { turnIndex: number }> = [];
-  transcript.forEach((t, i) => {
-    const ex = extractFromText(t.content || '');
-    const bucket = t.role === 'user' ? userExtracts : agentExtracts;
-    for (const e of ex) bucket.push({ ...e, turnIndex: i });
-  });
-  return { userExtracts, agentExtracts };
-}
-
-/* ---------------- LLM cross-check ---------------- */
-
-export async function validateDataCapture(transcript: Turn[]): Promise<DataCaptureReport> {
-  if (!transcript || transcript.length === 0) {
-    return { fields: [], totalChecked: 0, mismatchCount: 0, validationScore: 100 };
-  }
-
-  const { userExtracts, agentExtracts } = extractCandidatesByRole(transcript);
-  const hintHasAny = userExtracts.length + agentExtracts.length > 0;
-
-  // If we found no candidates at all, skip the LLM call to save cost.
-  if (!hintHasAny) {
-    return { fields: [], totalChecked: 0, mismatchCount: 0, validationScore: 100 };
-  }
-
-  const transcriptText = transcript
-    .map((t, i) => `[${i}] ${t.role.toUpperCase()}: ${t.content}`)
-    .join('\n');
-
-  const hintLines = [
-    ...userExtracts.map(e => `USER turn ${e.turnIndex}: ${e.type} -> "${e.raw}" (normalised "${e.normalised}")`),
-    ...agentExtracts.map(e => `AGENT turn ${e.turnIndex}: ${e.type} -> "${e.raw}" (normalised "${e.normalised}")`),
-  ].join('\n');
-
-  const prompt = `You are a data-capture validator for voice AI calls.
-
-For every structured value the USER spoke (phone numbers, dates/times, currency
-amounts, budgets, credit cards, emails, OTPs, addresses, names, numerical
-entries), check whether the AGENT later read/confirmed that value back to the
-user CORRECTLY. Flag MISMATCHES.
-
-Important rules:
-- A mismatch is when the agent confirms a DIFFERENT value than the user spoke
-  (e.g. user said "five five five two zero five five five two zero" but agent
-  confirms "5552055520" instead of "5552055520" - watch for digit drops/dupes).
-- Treat "triple five" = 555, "double zero" = 00, etc.
-- Ignore values the user mentioned that the agent never confirmed back
-  (those are not mismatches, just uncovered).
-- Ignore minor formatting differences (spaces, dashes, currency symbols).
-- Only report mismatches with high confidence (you can clearly see both
-  user-said and agent-confirmed in the transcript).
-- For each mismatch, severity is:
-   * critical for phone/card/email/otp/payment-amount mistakes
-   * major    for date/time/budget mistakes
-   * minor    for everything else
-
-## TRANSCRIPT
-${transcriptText}
-
-## REGEX HINTS (low-confidence pre-extraction)
-${hintLines}
-
-Respond ONLY with valid JSON in this exact shape:
-{
-  "fields": [
-    {
-      "fieldType": "phone|date|time|currency|budget|card|email|otp|numeric|address|name|other",
-      "fieldLabel": "<human label e.g. Customer phone number>",
-      "userSaid": "<verbatim from user turn>",
-      "asrCaptured": "<normalised value the ASR transcript shows>",
-      "agentConfirmed": "<normalised value agent repeated back, or '' if never confirmed>",
-      "match": <true|false>,
-      "severity": "critical|major|minor",
-      "userTurnIndex": <number>,
-      "agentTurnIndex": <number|null>,
-      "explanation": "<one-sentence why this is a mismatch>"
-    }
-  ],
-  "totalChecked": <integer - how many distinct structured values you evaluated>
-}
-
-If no values were confirmed back at all, return {"fields":[],"totalChecked":0}.`;
-
-  try {
-    const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: 'You are a strict voice-AI data-capture validator. Reply with valid JSON only.' },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.1,
-      max_tokens: 1500,
-    });
-
-    const txt = res.choices[0]?.message?.content || '{}';
-    const m = txt.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error('no JSON');
-    const parsed = JSON.parse(m[0]) as { fields?: DataCaptureMismatch[]; totalChecked?: number };
-    const fields = Array.isArray(parsed.fields) ? parsed.fields : [];
-
-    // Force-correct: if agentConfirmed equals asrCaptured, match=true.
-    for (const f of fields) {
-      const a = (f.asrCaptured || '').toLowerCase().replace(/\s+/g, '');
-      const b = (f.agentConfirmed || '').toLowerCase().replace(/\s+/g, '');
-      if (a && b && a === b) f.match = true;
-      if (a && b && a !== b) f.match = false;
-    }
-
-    const mismatchCount = fields.filter(f => f.match === false).length;
-    const totalChecked = typeof parsed.totalChecked === 'number'
-      ? parsed.totalChecked
-      : fields.length;
-    const validationScore = totalChecked > 0
-      ? Math.round(((totalChecked - mismatchCount) / totalChecked) * 100)
-      : 100;
-
-    return { fields, totalChecked, mismatchCount, validationScore };
-  } catch (e) {
-    console.error('[DataCaptureValidation] LLM error:', e);
-    return { fields: [], totalChecked: 0, mismatchCount: 0, validationScore: 100 };
-  }
+  return { fields, totalChecked, mismatchCount, validationScore };
 }
