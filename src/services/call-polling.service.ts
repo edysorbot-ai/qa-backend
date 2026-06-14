@@ -101,33 +101,43 @@ class CallPollingService {
   ): Promise<ProviderCall[]> {
     try {
       const ELEVENLABS_BASE_URL = resolveElevenLabsBaseUrl(baseUrl);
-      const params = new URLSearchParams();
-      params.append('agent_id', providerAgentId);
-      params.append('page_size', '100');
-      
-      if (sinceTimestamp) {
-        params.append('call_start_after_unix', Math.floor(sinceTimestamp / 1000).toString());
-      }
 
-      const response = await fetch(`${ELEVENLABS_BASE_URL}/convai/conversations?${params}`, {
-        headers: { 'xi-api-key': apiKey }
-      });
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        // Surface residency errors so the caller can probe & switch host.
-        if (response.status === 401 && /residency/i.test(body)) {
-          const err = new Error(`ElevenLabs residency error (401): ${body}`);
-          (err as any).residency = true;
-          throw err;
+      // ---- Paginated list of conversations (use next_cursor until exhausted)
+      const allConversations: any[] = [];
+      let cursor: string | undefined = undefined;
+      const MAX_PAGES = 20; // safety cap (20 * 100 = 2000 calls per poll)
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const params = new URLSearchParams();
+        params.append('agent_id', providerAgentId);
+        params.append('page_size', '100');
+        if (sinceTimestamp) {
+          params.append('call_start_after_unix', Math.floor(sinceTimestamp / 1000).toString());
         }
-        throw new Error(`ElevenLabs API error: ${response.status} ${body}`);
+        if (cursor) params.append('cursor', cursor);
+
+        const response = await fetch(`${ELEVENLABS_BASE_URL}/convai/conversations?${params}`, {
+          headers: { 'xi-api-key': apiKey }
+        });
+
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          if (response.status === 401 && /residency/i.test(body)) {
+            const err = new Error(`ElevenLabs residency error (401): ${body}`);
+            (err as any).residency = true;
+            throw err;
+          }
+          throw new Error(`ElevenLabs API error: ${response.status} ${body}`);
+        }
+
+        const data = await response.json() as { conversations?: any[]; has_more?: boolean; next_cursor?: string };
+        allConversations.push(...(data.conversations || []));
+        if (!data.has_more || !data.next_cursor) break;
+        cursor = data.next_cursor;
       }
 
-      const data = await response.json() as { conversations?: any[] };
       const calls: ProviderCall[] = [];
 
-      for (const conv of data.conversations || []) {
+      for (const conv of allConversations) {
         // Fetch detailed conversation data
         const detailResponse = await fetch(
           `${ELEVENLABS_BASE_URL}/convai/conversations/${conv.conversation_id}`,
@@ -141,17 +151,35 @@ class CallPollingService {
           // Set recording_url to 'proxy' to indicate the frontend should use the proxy endpoint
           const recordingUrl = 'proxy';
           
-          // Parse transcript - ElevenLabs may provide full transcript in 'messages' or 'transcript' array
+          // Parse transcript - ElevenLabs returns it in 'transcript' (newer, richer)
+          // or 'messages' (older). Pick whichever has more turns to avoid cut-offs.
           const transcript: Array<{ role: string; content: string; timestamp?: number }> = [];
           let transcriptText = '';
-          
-          // Try 'messages' first (often has full content), then fall back to 'transcript'
-          const transcriptSource = detail.messages || detail.transcript;
-          
+
+          const transcriptCandidates: any[][] = [];
+          if (Array.isArray(detail.transcript)) transcriptCandidates.push(detail.transcript);
+          if (Array.isArray(detail.messages)) transcriptCandidates.push(detail.messages);
+          const transcriptSource = transcriptCandidates.length
+            ? transcriptCandidates.reduce((a, b) => (b.length > a.length ? b : a))
+            : null;
+
           if (transcriptSource && Array.isArray(transcriptSource)) {
             for (const turn of transcriptSource) {
-              // ElevenLabs can return message in different fields: message, text, content, or tool_results
-              const content = turn.message || turn.text || turn.content || turn.tool_results?.content || '';
+              // ElevenLabs returns content as a string OR an array of parts.
+              // Newer schemas use {message, text, content, source_text}; tool calls
+              // may live under tool_results.
+              let content = '';
+              const rawContent = turn.message ?? turn.text ?? turn.content ?? turn.source_text;
+              if (Array.isArray(rawContent)) {
+                content = rawContent
+                  .map((p: any) => (typeof p === 'string' ? p : p?.text || p?.content || ''))
+                  .filter(Boolean)
+                  .join(' ');
+              } else if (typeof rawContent === 'string') {
+                content = rawContent;
+              } else if (turn.tool_results?.content) {
+                content = String(turn.tool_results.content);
+              }
               // Extract per-turn latency from ElevenLabs `conversation_turn_metrics`.
               // The most useful field is `convai_llm_service_ttf_sentence` (seconds);
               // we also accept `convai_llm_service_ttfb` and a few generic aliases.

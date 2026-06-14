@@ -15,6 +15,7 @@
 
 import OpenAI from 'openai';
 import pool from '../db';
+import { validateDataCapture, DataCaptureReport } from './data-capture-validation.service';
 
 interface TranscriptTurn {
   role: 'agent' | 'user' | 'system';
@@ -67,6 +68,7 @@ interface AnalysisResult {
     clarificationRequests: number;
     topicChanges: number;
   };
+  dataCapture?: DataCaptureReport;
 }
 
 interface ComplianceFlag {
@@ -330,7 +332,41 @@ Be thorough, fair, and focus on actionable insights.`;
         topicChanges: 0
       };
 
-      console.log(`[RealtimeAnalysis] Call ${callId} analyzed: score=${analysis.overallScore}, issues=${analysis.issues.length}, sentiment=${analysis.sentiment.overall}`);
+      // --- Data-capture validation (phone/date/currency/card/email/etc) ---
+      try {
+        const dataCapture = await validateDataCapture(
+          transcript.map(t => ({ role: t.role, content: t.content }))
+        );
+        analysis.dataCapture = dataCapture;
+        // Surface critical/major mismatches as issues so they show up in the
+        // existing "Issues" list and contribute to score.
+        for (const f of dataCapture.fields) {
+          if (f.match === false) {
+            analysis.issues.push({
+              severity: f.severity === 'critical' ? 'critical' : f.severity === 'major' ? 'major' : 'minor',
+              category: 'data-capture-mismatch',
+              description: `${f.fieldLabel} mismatch: user said "${f.userSaid}" (ASR captured "${f.asrCaptured}") but agent confirmed "${f.agentConfirmed}". ${f.explanation}`,
+              turnIndex: f.agentTurnIndex ?? f.userTurnIndex,
+              suggestion: `Verify ${f.fieldLabel.toLowerCase()} by reading each digit/character back individually and asking the caller to confirm before proceeding.`,
+            });
+          }
+        }
+        // Penalise overallScore for unresolved critical mismatches.
+        const criticalMismatches = dataCapture.fields.filter(
+          f => f.match === false && f.severity === 'critical'
+        ).length;
+        if (criticalMismatches > 0) {
+          analysis.overallScore = Math.max(0, analysis.overallScore - criticalMismatches * 10);
+          analysis.metrics.informationAccuracy = Math.max(
+            0,
+            (analysis.metrics.informationAccuracy ?? 50) - criticalMismatches * 15
+          );
+        }
+      } catch (e) {
+        console.error(`[RealtimeAnalysis] Data-capture validation failed:`, e);
+      }
+
+      console.log(`[RealtimeAnalysis] Call ${callId} analyzed: score=${analysis.overallScore}, issues=${analysis.issues.length}, sentiment=${analysis.sentiment.overall}, dataCaptureMismatches=${analysis.dataCapture?.mismatchCount ?? 0}`);
       
       return analysis;
     } catch (error) {
