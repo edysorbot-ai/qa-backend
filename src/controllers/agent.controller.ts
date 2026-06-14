@@ -931,7 +931,7 @@ Provide your analysis as a JSON object.`;
               break;
             }
             logger.info(`[KB] Fetching ElevenLabs KB for agent: ${providerAgentId}`);
-            const kbDocs = await elevenlabsProvider.getKnowledgeBase(integration.api_key, providerAgentId);
+            const kbDocs = await elevenlabsProvider.getKnowledgeBase(integration.api_key, providerAgentId, integration.base_url);
             logger.info(`[KB] ElevenLabs returned ${kbDocs?.length || 0} documents`);
             
             if (Array.isArray(kbDocs) && kbDocs.length > 0) {
@@ -1042,7 +1042,8 @@ Provide your analysis as a JSON object.`;
           try {
             content = await elevenlabsProvider.getKnowledgeBaseDocumentContent(
               integration.api_key,
-              documentId
+              documentId,
+              integration.base_url
             );
             logger.info(`[KB Content] Successfully fetched content, length: ${content.length}`);
             // Check if content is HTML
