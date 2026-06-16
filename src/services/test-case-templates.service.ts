@@ -443,7 +443,45 @@ export async function fillTemplateForAgent(
   let scenarioFilled = template.scenario_template;
   let expectedFilled = template.expected_behavior_template;
 
-  if (template.slots.length > 0) {
+  // For security test cases that touch sensitive categories (toxic_content,
+  // harmful_advice, child-safety, csam-adjacent, weapons, drugs), OpenAI's content
+  // moderation will refuse to slot-fill the prompt, leaving placeholders in. Skip
+  // the LLM entirely for those — the template fallbacks are already meaningful.
+  const sensitiveSecurityTypes = new Set([
+    'toxic_content',
+    'harmful_advice',
+    'csam',
+    'child_safety',
+    'self_harm',
+    'weapon_synthesis',
+    'drug_synthesis',
+    'illegal_content',
+  ]);
+  const isSensitiveSecurity =
+    !!template.is_security_test &&
+    sensitiveSecurityTypes.has((template.security_test_type as string) || '');
+
+  // Heuristic refusal detector — used after the LLM responds to detect content
+  // moderation refusals that arrive as plain text rather than thrown errors.
+  const isRefusalText = (text: string): boolean => {
+    const t = (text || '').toLowerCase();
+    if (!t || t.length < 10) return false;
+    const patterns = [
+      "i can't help",
+      'i cannot help',
+      "i can't assist",
+      'i cannot assist',
+      'i am unable to',
+      "i'm unable to",
+      'i must decline',
+      'i won\'t be able',
+      'sorry, but i',
+      'as an ai language model, i cannot',
+    ];
+    return patterns.some((p) => t.includes(p));
+  };
+
+  if (template.slots.length > 0 && !isSensitiveSecurity) {
     const slotList = template.slots.map(s => `- ${s.name}: ${s.description}`).join('\n');
     const sys = `You are a slot-filler for QA test cases. You will be given a list of slot names with descriptions, and an agent's system prompt. Your job is ONLY to produce concise string values for each slot that fit this agent's domain. You MUST NOT change the test construct. Return JSON only: {"slots": {"slot_name": "value", ...}}`;
     const usr = `AGENT SYSTEM PROMPT:\n${agentSystemPrompt}\n\n${agentFirstMessage ? `AGENT FIRST MESSAGE:\n${agentFirstMessage}\n\n` : ''}SLOTS TO FILL:\n${slotList}\n\nReturn JSON only.`;
@@ -458,10 +496,18 @@ export async function fillTemplateForAgent(
         response_format: { type: 'json_object' },
         max_tokens: 400,
       });
-      const parsed = JSON.parse(completion.choices[0].message.content || '{}');
+      const rawContent = completion.choices[0].message.content || '{}';
+      if (isRefusalText(rawContent)) {
+        throw new Error('LLM refused slot-fill (content moderation)');
+      }
+      const parsed = JSON.parse(rawContent);
       const filledSlots: Record<string, string> = parsed.slots || {};
       for (const slot of template.slots) {
-        const value = (filledSlots[slot.name] || slot.fallback || `[${slot.name}]`).toString();
+        const candidate = filledSlots[slot.name];
+        const value =
+          (candidate && !isRefusalText(String(candidate)) ? String(candidate) : '') ||
+          slot.fallback ||
+          `[${slot.name}]`;
         const re = new RegExp(`\\{\\{\\s*${slot.name}\\s*\\}\\}`, 'g');
         scenarioFilled = scenarioFilled.replace(re, value);
         expectedFilled = expectedFilled.replace(re, value);
@@ -474,6 +520,15 @@ export async function fillTemplateForAgent(
         scenarioFilled = scenarioFilled.replace(re, value);
         expectedFilled = expectedFilled.replace(re, value);
       }
+    }
+  } else if (template.slots.length > 0 && isSensitiveSecurity) {
+    // Sensitive security category — skip LLM (will be refused by content moderation),
+    // use deterministic fallbacks directly so we still get a valid filled template.
+    for (const slot of template.slots) {
+      const value = slot.fallback || `[${slot.name}]`;
+      const re = new RegExp(`\\{\\{\\s*${slot.name}\\s*\\}\\}`, 'g');
+      scenarioFilled = scenarioFilled.replace(re, value);
+      expectedFilled = expectedFilled.replace(re, value);
     }
   }
 
