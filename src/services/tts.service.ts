@@ -29,11 +29,53 @@ export const DEFAULT_VOICES = {
 
 export class TTSService {
   private apiKey: string;
+  private fallbackApiKey: string;
   private baseUrl: string;
 
-  constructor(apiKey: string, baseUrl?: string | null) {
+  constructor(apiKey: string, baseUrl?: string | null, fallbackApiKey?: string) {
     this.apiKey = apiKey;
+    // Server-side fallback used when the integration key lacks TTS scope (a
+    // common failure mode: ElevenLabs Convai integration keys often only have
+    // convai_read and 401 against /text-to-speech/*). Falls back to the env var.
+    this.fallbackApiKey =
+      fallbackApiKey || process.env.ELEVENLABS_API_KEY || '';
     this.baseUrl = resolveElevenLabsBaseUrl(baseUrl);
+  }
+
+  private async ttsRequest(
+    url: string,
+    body: object,
+    accept?: string,
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      'xi-api-key': this.apiKey,
+      'Content-Type': 'application/json',
+    };
+    if (accept) headers['Accept'] = accept;
+    let response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    // Retry with fallback key on auth / forbidden / quota errors when integration
+    // key lacks TTS permission.
+    if (
+      !response.ok &&
+      (response.status === 401 || response.status === 403) &&
+      this.fallbackApiKey &&
+      this.fallbackApiKey !== this.apiKey
+    ) {
+      console.warn(
+        `[TTS] Integration key rejected (${response.status}) for ${url} — retrying with server fallback key`,
+      );
+      const fbHeaders = { ...headers, 'xi-api-key': this.fallbackApiKey };
+      response = await fetch(url, {
+        method: 'POST',
+        headers: fbHeaders,
+        body: JSON.stringify(body),
+      });
+    }
+    return response;
   }
 
   /**
@@ -43,14 +85,9 @@ export class TTSService {
     const voiceId = request.voiceId || DEFAULT_VOICES.neutral;
     const modelId = request.modelId || 'eleven_turbo_v2';
 
-    const response = await fetch(`${this.baseUrl}/text-to-speech/${voiceId}`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': this.apiKey,
-        'Content-Type': 'application/json',
-        'Accept': 'audio/mpeg',
-      },
-      body: JSON.stringify({
+    const response = await this.ttsRequest(
+      `${this.baseUrl}/text-to-speech/${voiceId}`,
+      {
         text: request.text,
         model_id: modelId,
         voice_settings: {
@@ -58,8 +95,9 @@ export class TTSService {
           similarity_boost: request.similarityBoost ?? 0.75,
           speed: request.speed ?? 1.0,
         },
-      }),
-    });
+      },
+      'audio/mpeg',
+    );
 
     if (!response.ok) {
       const error = await response.text();
@@ -89,13 +127,9 @@ export class TTSService {
     const modelId = request.modelId || 'eleven_turbo_v2';
 
     // Request PCM format with specific output format
-    const response = await fetch(`${this.baseUrl}/text-to-speech/${voiceId}?output_format=pcm_16000`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    const response = await this.ttsRequest(
+      `${this.baseUrl}/text-to-speech/${voiceId}?output_format=pcm_16000`,
+      {
         text: request.text,
         model_id: modelId,
         voice_settings: {
@@ -103,8 +137,8 @@ export class TTSService {
           similarity_boost: request.similarityBoost ?? 0.75,
           speed: request.speed ?? 1.0,
         },
-      }),
-    });
+      },
+    );
 
     if (!response.ok) {
       const error = await response.text();
@@ -133,13 +167,9 @@ export class TTSService {
     const modelId = request.modelId || 'eleven_turbo_v2';
 
     // Request ulaw format at 8kHz
-    const response = await fetch(`${this.baseUrl}/text-to-speech/${voiceId}?output_format=ulaw_8000`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    const response = await this.ttsRequest(
+      `${this.baseUrl}/text-to-speech/${voiceId}?output_format=ulaw_8000`,
+      {
         text: request.text,
         model_id: modelId,
         voice_settings: {
@@ -147,8 +177,8 @@ export class TTSService {
           similarity_boost: request.similarityBoost ?? 0.75,
           speed: request.speed ?? 1.0,
         },
-      }),
-    });
+      },
+    );
 
     if (!response.ok) {
       const error = await response.text();

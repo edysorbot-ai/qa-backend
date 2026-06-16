@@ -789,8 +789,26 @@ export class BatchedTestExecutorService {
                 break;
                 
               default:
-                // Log unknown message types to understand what's happening
-                if (!['user_transcript', 'audio_event', 'internal_vad_score', 'internal_turn_probability', 'user_started_speaking'].includes(message.type)) {
+                // Capture user_transcript events: this is what the agent actually
+                // heard from our test caller. Useful for ASR-vs-spoken mismatch
+                // analysis and to repair gaps when our manually-pushed test_caller
+                // text differs from how the agent perceived it. We log a side
+                // channel — don't replace the manually-pushed test_caller turn.
+                if (
+                  message.type === 'user_transcript' &&
+                  message.user_transcription_event?.user_transcript
+                ) {
+                  const heard = String(
+                    message.user_transcription_event.user_transcript,
+                  ).trim();
+                  if (heard) {
+                    transcript.push({
+                      role: 'user_asr_capture' as any,
+                      content: heard,
+                      timestamp: Date.now(),
+                    });
+                  }
+                } else if (!['user_transcript', 'audio_event', 'internal_vad_score', 'internal_turn_probability', 'user_started_speaking'].includes(message.type)) {
                   console.log(`[BatchedExecutor] Unknown message type: ${message.type}`, JSON.stringify(message).substring(0, 200));
                 }
             }
