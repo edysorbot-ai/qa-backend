@@ -76,7 +76,27 @@ export function turnsToDiarization(
 function buildMuteFilter(diarization: DiarizationTurn[], keepSpeaker: Speaker): string {
   const otherTurns = diarization.filter((t) => t.role !== keepSpeaker);
   if (!otherTurns.length) return 'anull';
-  return otherTurns
+  // Issue #20: when calls have hundreds of short turns, the per-turn `volume`
+  // filter chain blows up the ffmpeg filtergraph (>50KB) and ffmpeg crashes
+  // around the 100s mark while parsing it. Coalesce contiguous "other"
+  // turns so the chain stays bounded.
+  const sorted = [...otherTurns].sort((a, b) => a.startMs - b.startMs);
+  const merged: DiarizationTurn[] = [];
+  for (const t of sorted) {
+    const last = merged[merged.length - 1];
+    // Merge if the gap to the previous "other" turn is < 250ms.
+    if (last && t.startMs - last.endMs < 250) {
+      last.endMs = Math.max(last.endMs, t.endMs);
+    } else {
+      merged.push({ ...t });
+    }
+  }
+  // Hard cap: keep the longest 200 mute segments. The remainder is rare
+  // chatter and not worth crashing the pipeline over.
+  const capped = merged.length > 200
+    ? [...merged].sort((a, b) => (b.endMs - b.startMs) - (a.endMs - a.startMs)).slice(0, 200)
+    : merged;
+  return capped
     .map((t) => {
       const s = (t.startMs / 1000).toFixed(3);
       const e = (t.endMs / 1000).toFixed(3);
@@ -85,15 +105,32 @@ function buildMuteFilter(diarization: DiarizationTurn[], keepSpeaker: Speaker): 
     .join(',');
 }
 
-function runFfmpeg(args: string[]): Promise<void> {
+function runFfmpeg(args: string[], timeoutMs = 600_000): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { proc.kill('SIGKILL'); } catch {}
+      reject(new Error(`ffmpeg timeout after ${timeoutMs}ms: ${stderr.slice(-500)}`));
+    }, timeoutMs);
     proc.stderr.on('data', (d) => {
       stderr += d.toString();
+      // Cap stderr accumulation to avoid memory pressure on long jobs.
+      if (stderr.length > 100_000) stderr = stderr.slice(-50_000);
     });
-    proc.on('error', reject);
+    proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
     proc.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-500)}`));
     });

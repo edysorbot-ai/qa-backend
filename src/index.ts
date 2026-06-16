@@ -52,6 +52,7 @@ import { addProductionCallsUnique } from './db/migrations/049_production_calls_u
 import { addAgentsUserExternalUnique } from './db/migrations/050_agents_user_external_unique';
 import { addSavedBatchesIsSecurity } from './db/migrations/051_add_saved_batches_is_security';
 import { extendConsistencyRuns } from './db/migrations/052_extend_consistency_runs';
+import { createTestRunPrompts } from './db/migrations/053_create_test_run_prompts';
 import { addTestResultColumns } from './db/migrations/add-test-result-columns';
 import { createAlertSettingsTable } from './db/migrations/create-alert-settings';
 import { createTeamMembersTable } from './db/migrations/create-team-members';
@@ -126,6 +127,7 @@ const startServer = async () => {
     await addAgentsUserExternalUnique();
     await addSavedBatchesIsSecurity();
     await extendConsistencyRuns();
+    await createTestRunPrompts();
     
     // Create scheduled tests table
     await ScheduledTestModel.createTable();

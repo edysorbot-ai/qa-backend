@@ -29,6 +29,32 @@ import {
   reinjectPII,
   type RedactionResult,
 } from './pii-redaction.service';
+import { logger } from './logger.service';
+import { pool } from '../db/index';
+
+/**
+ * Issue #13 — internal-only prompt logger. Persists the prompt to
+ * `test_run_prompts` and emits a structured log line. Never returns
+ * data that surfaces in any UI / public API.
+ */
+async function logPromptForInternalReview(
+  testRunId: string | undefined,
+  batchId: string | undefined,
+  promptType: 'test_caller' | 'evaluator' | 'persona' | 'simulated_user',
+  promptText: string,
+): Promise<void> {
+  try {
+    logger.info(`[PromptLog] testRunId=${testRunId || 'n/a'} batchId=${batchId || 'n/a'} type=${promptType} length=${promptText.length}`);
+    if (!testRunId) return;
+    await pool.query(
+      `INSERT INTO test_run_prompts (test_run_id, batch_id, prompt_type, prompt_text)
+       VALUES ($1, $2, $3, $4)`,
+      [testRunId, batchId || null, promptType, promptText.slice(0, 200_000)]
+    );
+  } catch (err) {
+    logger.warn(`[PromptLog] failed to persist: ${(err as Error).message}`);
+  }
+}
 
 interface BatchTestResult {
   testCaseId: string;
@@ -127,6 +153,7 @@ export class BatchedTestExecutorService {
   private openai: OpenAI;
   private elevenLabsApiKey: string;
   private currentAgentPrompt: string = '';
+  private currentTestRunId: string | undefined; // (#13) for prompt logging
   private falsePositivePatterns: Array<{ test_case_scenario: string; actual_response: string; reason: string }> = [];
   private falseNegativePatterns: Array<{ test_case_scenario: string; actual_response: string; reason: string }> = [];
   /** test_case_id → approved acceptable+unacceptable gold transcripts, loaded per batch. */
@@ -147,10 +174,12 @@ export class BatchedTestExecutorService {
     agentConfig: { provider: string; agentId: string; apiKey: string; baseUrl?: string | null },
     agentPrompt: string,
     falsePositivePatterns?: Array<{ test_case_scenario: string; actual_response: string; reason: string }>,
-    falseNegativePatterns?: Array<{ test_case_scenario: string; actual_response: string; reason: string }>
+    falseNegativePatterns?: Array<{ test_case_scenario: string; actual_response: string; reason: string }>,
+    testRunId?: string,
   ): Promise<BatchExecutionResult> {
     // Store agent prompt for use in test caller prompt building
     this.currentAgentPrompt = agentPrompt;
+    this.currentTestRunId = testRunId; // (#13)
     this.falsePositivePatterns = falsePositivePatterns || [];
     this.falseNegativePatterns = falseNegativePatterns || [];
 
@@ -179,6 +208,16 @@ export class BatchedTestExecutorService {
     console.log(`[BatchedExecutor] Starting batch: ${batch.name}`);
     console.log(`[BatchedExecutor] Test cases: ${batch.testCases.map(tc => tc.name).join(', ')}`);
     console.log(`[BatchedExecutor] TestMode: ${batch.testMode || 'voice (default)'}`);
+
+    // (#13) Log the test caller system prompt for internal review.
+    // The same fn is called inside the actual execution paths; we call it
+    // once here to capture exactly what was used. NEVER returned to UI.
+    try {
+      const _capturedPrompt = this.buildBatchTestCallerPrompt(batch.testCases);
+      void logPromptForInternalReview(testRunId, batch.id, 'test_caller', _capturedPrompt);
+    } catch (err) {
+      logger.warn(`[PromptLog] could not capture test_caller prompt: ${(err as Error).message}`);
+    }
     
     const startTime = Date.now();
     const transcript: ConversationTurn[] = [];

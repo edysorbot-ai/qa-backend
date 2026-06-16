@@ -466,6 +466,10 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
         output_match,
         agent_audio_url,
         prompt_suggestions,
+        is_false_positive,
+        false_positive_reason,
+        is_false_negative,
+        false_negative_reason,
         started_at,
         completed_at,
         created_at
@@ -588,6 +592,11 @@ router.get('/results/:testRunId', async (req: Request, res: Response) => {
           promptSuggestions: promptSuggestions || [],
           // Turn coverage from evaluation
           turnsCovered: parsedMetrics?.turnsCovered || [],
+          // False positive/negative tracking (for UI markers)
+          isFalsePositive: !!r.is_false_positive,
+          falsePositiveReason: r.false_positive_reason,
+          isFalseNegative: !!r.is_false_negative,
+          falseNegativeReason: r.false_negative_reason,
           // Timestamps
           startedAt: r.started_at,
           completedAt: r.completed_at,
@@ -1885,7 +1894,10 @@ async function executeBatchedCalls(
           description: `Testing ${batch.testCases.length} scenarios`,
         },
         agentConfig,
-        '' // Agent prompt - will be fetched by executor
+        '', // Agent prompt - will be fetched by executor
+        undefined,
+        undefined,
+        testRunId, // (#13) prompt logging
       );
       
       const { results, transcript, totalTurns, durationMs, audioBuffer } = executionResult;
@@ -1946,9 +1958,16 @@ async function executeBatchedCalls(
           actualLower.includes('scenario not covered') ||
           actualLower.includes('not covered in conversation') ||
           actualLower.includes('not addressed in this conversation');
+        const isSecurityCase = !!(tc as any).is_security_test;
         let status: string;
         if (!result) {
           status = 'failed';
+        } else if (scenarioNotCovered && !isSecurityCase) {
+          // (#16) Don't mark as failed when the test agent never raised the
+          // scenario for non-security cases. Mark as 'untested' so users can
+          // retest without it polluting the failure metrics.
+          // Security cases keep PASS/FAIL based on agent refusal (existing behaviour).
+          status = 'untested';
         } else if (result.passed) {
           status = 'passed';
         } else {
@@ -2207,7 +2226,8 @@ async function executeBatchedTestRun(
         agentConfig,
         agentPrompt,
         falsePositivePatterns,
-        falseNegativePatterns
+        falseNegativePatterns,
+        testRunId, // (#13) prompt logging
       );
       
       // Store results for each test case

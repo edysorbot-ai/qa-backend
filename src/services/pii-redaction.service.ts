@@ -58,8 +58,10 @@ export interface RedactionResult {
 }
 
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
-// E.164-ish: optional +, 7-15 digits, allowing separators
-const PHONE_RE = /\b(?:\+?\d{1,3}[\s\-.]?)?(?:\(?\d{2,4}\)?[\s\-.]?){2,4}\d{2,4}\b/g;
+// E.164-ish phone numbers. Strict: must be a contiguous span of 7-15 digits
+// when separators are stripped, AND must start with either '+', '(' or a
+// digit-group of length >=3 to avoid matching prices like "$500" or "200, 00".
+const PHONE_RE = /(?:\+?\d{1,3}[\s\-.]?)?(?:\(\d{2,4}\)|\d{3,4})[\s\-.]?\d{3,4}[\s\-.]?\d{2,4}/g;
 // 13-19 digits allowing spaces or dashes — restrict to typical card lengths
 const CARD_RE = /\b(?:\d[ -]?){13,19}\b/g;
 // US-style SSN
@@ -128,6 +130,17 @@ export function redactPII(text: string): RedactionResult {
   redactWithRegex(text, IP_RE, 'ip_address', matches);
   redactWithRegex(text, DOB_RE, 'date_of_birth', matches);
   redactWithRegex(text, PHONE_RE, 'phone', matches);
+
+  // Drop overlapping matches: if a more-specific pattern (card, ssn, iban,
+  // dob) already covers a span, drop any phone/ip match that overlaps it.
+  // This prevents double-redaction and inflated PII counts (Issue #9).
+  const specific = matches.filter(m => m.type !== 'phone' && m.type !== 'ip_address');
+  const filtered = matches.filter(m => {
+    if (m.type !== 'phone' && m.type !== 'ip_address') return true;
+    return !specific.some(s => !(m.end <= s.start || m.start >= s.end));
+  });
+  matches.length = 0;
+  matches.push(...filtered);
 
   // Sort matches by start desc so we can splice without recomputing offsets.
   const sorted = [...matches].sort((a, b) => b.start - a.start);
